@@ -427,3 +427,117 @@ def walk_forward(
             "n_candidates": len(candidates),
         },
     )
+
+
+# --------------------------------------------------------------------------- #
+# searching until the goal is met
+# --------------------------------------------------------------------------- #
+@dataclass
+class TargetSearchResult:
+    """Outcome of :func:`search_until_target`."""
+
+    reached: bool
+    attempts: pd.DataFrame
+    best: Optional[WalkForwardResult]
+    best_label: str
+    target: float
+
+    def summary(self) -> str:
+        lines = [
+            f"== search for ${self.target:,.0f} ==",
+            f"  attempts run      {len(self.attempts)}",
+        ]
+        if self.reached:
+            row = self.attempts[self.attempts["target_hit"]].iloc[0]
+            lines += [
+                f"  TARGET REACHED    {row['label']} (seed {int(row['seed'])})",
+                f"  final equity      ${row['final_equity']:,.2f}",
+                f"  worst drawdown    {row['max_drawdown']:.1%}",
+                f"  reached on        {row['date_to_target']}",
+            ]
+        else:
+            best = self.attempts.sort_values("peak_equity", ascending=False).iloc[0]
+            lines += [
+                "  target NOT reached by any attempt",
+                f"  best attempt      {best['label']} (seed {int(best['seed'])}) "
+                f"peaked at ${best['peak_equity']:,.2f}",
+            ]
+        lines.append(
+            "  note              every extra attempt is another chance to fit noise; "
+            "read the attempt count\n                    as part of the result, and check the "
+            "deflated Sharpe against it."
+        )
+        return "\n".join(lines)
+
+
+def search_until_target(
+    datasets: Dict[str, pd.DataFrame | Dict[str, pd.DataFrame]],
+    base_exec: ExecutionConfig | None = None,
+    wf: WalkForwardConfig | None = None,
+    space: Dict[str, Sequence] | None = None,
+    *,
+    seeds: Sequence[int] = (1, 2, 3),
+    stop_when_reached: bool = True,
+    verbose: bool = True,
+) -> TargetSearchResult:
+    """Run walk-forwards across markets and seeds until the target is reached.
+
+    This automates "keep backtesting until it makes $1,000" - and, because that
+    loop is itself a search, it keeps the receipt. Every attempt is recorded, so
+    the number of attempts can be fed to :func:`~tradingagent.metrics.deflated_sharpe`
+    and the result read for what it is: the best of *n* tries, not one clean
+    experiment. An attempt "reaches the target" only on its out-of-sample curve;
+    the search never sees the windows it is judged on.
+    """
+    base_exec = base_exec or ExecutionConfig()
+    wf = wf or WalkForwardConfig(verbose=False)
+    target = base_exec.target_equity
+
+    rows: List[dict] = []
+    best_result: Optional[WalkForwardResult] = None
+    best_label = ""
+    best_peak = -np.inf
+    reached = False
+
+    for label, data in datasets.items():
+        for seed in seeds:
+            try:
+                res = walk_forward(data, base_exec, replace(wf, seed=seed, verbose=False), space)
+            except ValueError as exc:  # not enough history for this market
+                if verbose:
+                    print(f"[skip] {label} seed {seed}: {exc}")
+                continue
+            stats = res.stats()
+            peak = float(res.equity.max())
+            hit = bool(stats.get("target_hit", 0.0))
+            rows.append(
+                {
+                    "label": label,
+                    "seed": seed,
+                    "final_equity": stats["final_equity"],
+                    "peak_equity": peak,
+                    "target_hit": hit,
+                    "date_to_target": str(stats.get("date_to_target", ""))[:10],
+                    "sharpe": stats["sharpe"],
+                    "max_drawdown": stats["max_drawdown"],
+                    "n_trades": stats.get("n_trades", 0),
+                }
+            )
+            if verbose:
+                mark = "HIT" if hit else "   "
+                print(
+                    f"[{mark}] {label:<22} seed {seed}: ${stats['final_equity']:>9,.0f}  "
+                    f"peak ${peak:>9,.0f}  sharpe {stats['sharpe']:5.2f}  "
+                    f"maxDD {stats['max_drawdown']:6.1%}"
+                )
+            if peak > best_peak:
+                best_peak, best_result, best_label = peak, res, f"{label} (seed {seed})"
+            if hit:
+                reached = True
+                best_result, best_label = res, f"{label} (seed {seed})"
+                if stop_when_reached:
+                    return TargetSearchResult(
+                        True, pd.DataFrame(rows), best_result, best_label, target
+                    )
+
+    return TargetSearchResult(reached, pd.DataFrame(rows), best_result, best_label, target)

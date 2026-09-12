@@ -18,15 +18,29 @@ bar ``t`` when it sets the weight it wants to hold *during* bar ``t + 1``.
 __version__ = "0.1.0"
 
 from .engine import BacktestEngine, BacktestResult, ExecutionConfig
-from .agent import TradingAgent, AgentConfig
-from .metrics import summarize, time_to_target
+from .agent import AgentConfig, PortfolioAgent, TradingAgent
+from .risk import RiskConfig
+from .metrics import monte_carlo_paths, summarize, time_to_target
+from .optimize import (
+    WalkForwardConfig,
+    WalkForwardResult,
+    search_until_target,
+    walk_forward,
+)
 
 __all__ = [
+    "AgentConfig",
     "BacktestEngine",
     "BacktestResult",
     "ExecutionConfig",
+    "PortfolioAgent",
+    "RiskConfig",
     "TradingAgent",
-    "AgentConfig",
+    "WalkForwardConfig",
+    "WalkForwardResult",
+    "monte_carlo_paths",
+    "search_until_target",
     "summarize",
     "time_to_target",
+    "walk_forward",
 ]

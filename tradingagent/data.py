@@ -136,7 +136,7 @@ def load_coinbase(
         )
     gran = COINBASE_GRANULARITIES[interval]
     start_ts = pd.Timestamp(start, tz="UTC")
-    end_ts = pd.Timestamp(end, tz="UTC") if end is not None else pd.Timestamp.utcnow().tz_localize("UTC")
+    end_ts = pd.Timestamp(end, tz="UTC") if end is not None else pd.Timestamp.now(tz="UTC")
 
     sess = session or requests.Session()
     url = f"https://api.exchange.coinbase.com/products/{product_id}/candles"

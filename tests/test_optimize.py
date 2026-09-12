@@ -100,3 +100,47 @@ def test_target_growth_prefers_the_shallower_drawdown():
     wild = {"final_equity": 300.0, "initial_equity": 100.0, "max_drawdown": -0.75,
             "n_trades": 60, "bust": 0.0}
     assert OBJECTIVES["target_growth"](calm) > OBJECTIVES["target_growth"](wild)
+
+
+def test_search_until_target_records_every_attempt(long_prices):
+    from tradingagent.optimize import search_until_target
+
+    datasets = {"a": long_prices, "b": synthetic_ohlcv(1200, seed=21)}
+    out = search_until_target(
+        datasets,
+        ExecutionConfig(initial_capital=100.0, target_equity=1e12),  # unreachable on purpose
+        SMALL,
+        seeds=(1, 2),
+        verbose=False,
+    )
+    assert out.reached is False
+    assert len(out.attempts) == 4          # 2 datasets x 2 seeds, none stopped early
+    assert set(out.attempts["label"]) == {"a", "b"}
+    assert "attempts run" in out.summary()
+
+
+def test_search_until_target_stops_at_the_first_hit(long_prices):
+    from tradingagent.optimize import search_until_target
+
+    out = search_until_target(
+        {"a": long_prices, "b": long_prices},
+        ExecutionConfig(initial_capital=100.0, target_equity=1.0),  # trivially reachable
+        SMALL,
+        seeds=(1, 2),
+        verbose=False,
+    )
+    assert out.reached is True
+    assert len(out.attempts) == 1, "search kept going after reaching the target"
+
+
+def test_search_skips_markets_with_too_little_history(long_prices):
+    from tradingagent.optimize import search_until_target
+
+    out = search_until_target(
+        {"tiny": synthetic_ohlcv(100, seed=1), "ok": long_prices},
+        ExecutionConfig(initial_capital=100.0, target_equity=1e12),
+        SMALL,
+        seeds=(1,),
+        verbose=False,
+    )
+    assert set(out.attempts["label"]) == {"ok"}
