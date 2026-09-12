@@ -274,11 +274,11 @@ class TimeSeriesMomentum(Strategy):
         mom = ind.roc(c, int(p["lookback"]))
         if int(p["smooth"]) > 1:
             mom = mom.rolling(int(p["smooth"]), min_periods=1).mean()
-        # map the momentum into [-1, 1] by its trailing percentile rank
+        # Direction comes from the sign of the trailing return; size comes from
+        # how extreme that return is against its own history, so an ordinary
+        # drift gets a small position and an unusual one gets a large position.
         rank = ind.percentile_rank(mom, int(p["rank_n"]))
-        w = (2.0 * rank - 1.0) * np.sign(mom)
-        w = w.where(np.sign(mom) != 0, 0.0)
-        w = w.abs() * np.sign(mom)
+        w = np.sign(mom) * (2.0 * rank - 1.0).abs()
         if not int(p["allow_short"]):
             w = w.clip(lower=0.0)
         return self._finish(w, df.index)

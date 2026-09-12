@@ -159,21 +159,22 @@ absolute return, is the claim this repo makes.
 
 ### The caveat that matters more than the headline
 
-The same pipeline, run on histories that start in later years:
+The same pipeline, run on histories that start in later years (three seeds each, 60 candidates per
+fold; buy & hold measured over the same traded window, so the columns are comparable):
 
-| History starts | Trading starts | Agent (median of 3 seeds) | Reached $1,000 | Buy & hold |
-|---|---|---|---|---|
-| 2015-07 | 2017-07 | **$1,189** | 3 / 3 | $27,718 |
-| 2017-01 | 2019-01 | $406 | 1 / 3 | $7,916 |
-| 2018-01 | 2020-01 | $260 | 0 / 3 | $556 |
-| 2019-01 | 2021-01 | **$90** | 0 / 3 | $2,087 |
-| 2020-01 | 2022-01 | $107 | 0 / 3 | $1,075 |
-| 2021-01 | 2023-01 | $123 | 0 / 3 | $266 |
-| 2022-01 | 2024-01 | $120 | 0 / 3 | $167 |
+| History starts | Agent (median of 3 seeds) | Reached $1,000 | Buy & hold |
+|---|---|---|---|
+| 2015-07 | **$1,466** | 3 / 3 | $2,766 |
+| 2017-01 | $680 | 2 / 3 | $2,125 |
+| 2018-01 | $271 | 0 / 3 | $940 |
+| 2019-01 | **$66** | 0 / 3 | $191 |
+| 2020-01 | $94 | 0 / 3 | $184 |
+| 2021-01 | $130 | 0 / 3 | $442 |
+| 2022-01 | $109 | 0 / 3 | $165 |
 
-**Essentially all of the growth came from two crypto bull markets.** Any run whose trading begins
-after 2021 goes sideways, and the one that begins in January 2021 ends *below* its starting stake
-while BTC itself nearly doubled.
+**Essentially all of the growth came from two crypto bull markets.** No run whose trading begins
+after 2020 reaches the target, and the one starting January 2019 ends at $66 - a third of the stake
+gone - while BTC itself nearly doubled over the same window.
 
 Diagnosing that shortfall on the 2019-start window:
 
@@ -189,18 +190,53 @@ Costs explain about $10 of it, and the search is adding value rather than destro
 the fixed configuration). What changed is the signal: **trend following on daily BTC bars had a
 strong edge through 2021 and a much weaker one since.**
 
+### Markets the method was never tuned on
+
+The pipeline was developed against BTC, so BTC results carry my own selection bias that no
+walk-forward can remove. Pointing the identical code at four other markets is the corrective:
+
+| Market | Agent | Buy & hold | Sharpe |
+|---|---|---|---|
+| ETH-USD | $871 | $20,140 | 0.87 |
+| SOL-USD | $127 | $251 | 0.39 |
+| LINK-USD | $99 | $411 | 0.13 |
+| DOGE-USD | **$118** | **$17** | 0.33 |
+
+ETH reproduces the BTC pattern closely and nearly reaches the target. SOL and LINK are roughly
+flat. DOGE is the clearest single illustration of what this system is actually for: buy & hold lost
+83% of the stake, and the agent finished up 18%.
+
+### Pushing harder toward the target
+
+Same walk-forward, varying only the volatility target and leverage cap:
+
+| Target vol | Max leverage | Final equity | Max drawdown | Bootstrap p(ruin) |
+|---|---|---|---|---|
+| 0.30 | 1.0x | $410 | -27% | 0% |
+| 0.50 | 1.5x | $773 | -42% | 0% |
+| 0.50 | 2.0x | $1,024 | -40% | 0% |
+| 0.80 | 2.0x | $2,676 | -48% | 0% |
+| 0.80 | 3.0x | $2,657 | -60% | 0% |
+| 1.20 | 3.0x | $5,252 | -64% | 0% |
+
+**Do not read that `p(ruin)` column as a safety guarantee.** A block bootstrap of daily returns
+cannot produce a crash worse than the worst stretch already in the sample, and the engine does not
+model exchange liquidation, funding spikes or a gap that blows through a stop overnight. Real ruin
+risk at 3x leverage on daily crypto is meaningfully above zero; the column says only that nothing
+*in this sample, reshuffled* killed the account.
+
 ### Robustness
 
 - **Block bootstrap** of the realised out-of-sample returns (5,000 resampled histories):
-  59.5% reach $1,000, **0% are wiped out**, median final equity $1,014, 5th percentile $105,
-  95th percentile $11,330, typical worst drawdown -56%.
-- **Deflated Sharpe: 0.19 - 0.50**, counting 150 distinct configurations at the optimistic end and
-  2,850 evaluations at the pessimistic end. That straddles the 0.5 line, which is the honest
-  verdict: **an observed Sharpe of 0.89 over this sample is roughly what a search this wide could
-  produce from noise alone.** The equity curve may still reflect something real; this statistic
-  does not establish that it does.
+  59.5% reach $1,000, median final equity $1,014, 5th percentile $105, 95th percentile $11,330,
+  typical worst drawdown -56%.
+- **Deflated Sharpe: 0.17 - 0.46**, counting 150 distinct configurations at the optimistic end and
+  2,850 evaluations at the pessimistic end. Below 0.5 at both ends, which is the honest verdict:
+  **an observed Sharpe of ~0.9 over this sample is within what a search this wide could produce
+  from noise alone.** The equity curve may still reflect something real; this statistic does not
+  establish that it does.
 - **Diversification** helps risk, not return: BTC+ETH lifted Sharpe from ~0.91 to ~1.01 and cut
-  max drawdown from -50% to -39%, while the median final equity fell from ~$1,195 to ~$720.
+  max drawdown from -50% to -39%, while median final equity fell from ~$1,195 to ~$720.
 
 ### What to take from this
 
