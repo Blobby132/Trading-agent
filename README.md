@@ -142,6 +142,11 @@ All figures below are **out of sample**: at every point on the curve, the parame
 were chosen only from earlier data. Reproduce with
 `python -m tradingagent.cli --symbols BTC-USD --capital 100 --target 1000 --candidates 150`.
 
+![Walk-forward tearsheet for BTC-USD](docs/walkforward_btc.png)
+
+The fold bars in that third panel are the honest summary of this whole project: **only 37% of the
+six-month test windows were positive**, and three of them carry the entire result.
+
 ### Headline - BTC-USD daily, traded 2017-07-29 -> 2026-09-12, five random seeds
 
 | | Agent (median of 5 seeds) | Buy & hold |
