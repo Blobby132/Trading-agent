@@ -105,7 +105,7 @@ def main(argv: List[str] | None = None) -> int:
         equity, returns, weights, folds = result.equity, result.returns, result.weights, None
         stats = result.stats(benchmark=bench)
         title = f"{'+'.join(symbols)} - default agent (in-sample)"
-        n_trials = 1
+        n_trials = n_distinct = 1
     else:
         wf = walk_forward(
             data, exec_cfg,
@@ -119,6 +119,7 @@ def main(argv: List[str] | None = None) -> int:
         stats = wf.stats(benchmark=bench.reindex(wf.equity.index))
         title = f"{'+'.join(symbols)} - walk-forward (out of sample)"
         n_trials = wf.n_evaluations
+        n_distinct = int(wf.meta.get("n_candidates", args.candidates))
 
     print()
     print(format_summary(stats, title))
@@ -135,8 +136,21 @@ def main(argv: List[str] | None = None) -> int:
             f"median ${mc['median_final_equity']:,.0f}  95th ${mc['p95_final_equity']:,.0f}"
         )
     if n_trials > 1:
-        dsr = deflated_sharpe(stats.get("sharpe", 0.0), n_trials, int(stats.get("bars", 0)), ppy)
-        print(f"    deflated Sharpe p-value after {n_trials:,} configurations searched: {dsr:.2f}")
+        # Two defensible ways to count "how many things did we try": the number
+        # of distinct configurations (optimistic - the same ones are re-scored
+        # each fold) and the number of individual evaluations (pessimistic -
+        # each fold makes its own selection). The truth is between them, so
+        # report the interval rather than pick the flattering end.
+        n_obs = int(stats.get("bars", 0))
+        sharpe_val = stats.get("sharpe", 0.0)
+        hi = deflated_sharpe(sharpe_val, n_distinct, n_obs, ppy)
+        lo = deflated_sharpe(sharpe_val, n_trials, n_obs, ppy)
+        print(
+            f"    deflated Sharpe: {min(lo, hi):.2f} - {max(lo, hi):.2f} "
+            f"(counting {n_distinct:,} distinct configurations to {n_trials:,} evaluations)"
+        )
+        if max(lo, hi) < 0.5:
+            print("    -> below 0.5 at both ends: this Sharpe is within what the search alone could produce.")
 
     os.makedirs(args.outdir, exist_ok=True)
     equity.to_csv(os.path.join(args.outdir, "equity.csv"))

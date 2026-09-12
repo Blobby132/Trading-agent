@@ -183,8 +183,11 @@ class BacktestEngine:
             target_units = np.where(px_open > 0, desired * equity_prev / np.maximum(px_open, 1e-12), 0.0)
             delta = target_units - units
             notional = np.abs(delta) * px_open
-            # ignore dust: rebalancing noise is pure cost
-            too_small = notional < ec.min_trade_frac * max(equity_prev, 1e-9)
+            # Ignore dust: rebalancing noise is pure cost. Closing a position
+            # out entirely is never dust, though - suppressing that would leave
+            # a small position open long after the signal said to be flat.
+            full_exit = (target_units == 0.0) & (units != 0.0)
+            too_small = (notional < ec.min_trade_frac * max(equity_prev, 1e-9)) & ~full_exit
             delta = np.where(too_small, 0.0, delta)
             notional = np.abs(delta) * px_open
 

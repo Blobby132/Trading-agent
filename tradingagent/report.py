@@ -86,13 +86,15 @@ def plot_equity(
         )
 
     ax.axhline(target, color=C_GOOD, linewidth=1.2, linestyle="--", zorder=1)
+    # anchored right, clear of the legend in the upper-left corner
     ax.annotate(
         f"target {_money(target)}",
-        xy=(equity.index[0], target),
-        xytext=(4, 4),
+        xy=(equity.index[-1], target),
+        xytext=(-4, 5),
         textcoords="offset points",
         color=C_GOOD,
         fontsize=9,
+        ha="right",
     )
     ax.axhline(initial, color=C_TEXT_2, linewidth=0.8, alpha=0.5, zorder=1)
 
@@ -128,14 +130,18 @@ def plot_drawdown(equity: pd.Series, *, title: str = "Drawdown from peak", ax=No
     ax.fill_between(dd.index, dd.values, 0.0, color=C_CRITICAL, alpha=0.28, linewidth=0)
     ax.plot(dd.index, dd.values, color=C_CRITICAL, linewidth=1.2)
     worst = float(dd.min())
+    at = dd.idxmin()
+    # label inward when the trough sits near the right edge, or it runs off it
+    near_right = dd.index.get_loc(at) > 0.75 * len(dd)
     ax.annotate(
         f"worst {worst:,.1f}%",
-        xy=(dd.idxmin(), worst),
-        xytext=(6, 6),
+        xy=(at, worst),
+        xytext=(-6 if near_right else 6, 8),
         textcoords="offset points",
         color=C_CRITICAL,
         fontsize=9,
         fontweight="bold",
+        ha="right" if near_right else "left",
     )
     ax.set_ylabel("%", color=C_TEXT_2, fontsize=9)
     ax.set_title(title, fontsize=11, loc="left", pad=8)

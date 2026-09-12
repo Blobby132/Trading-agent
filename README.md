@@ -134,7 +134,77 @@ Three further checks ship with it, because a walk-forward can still flatter a se
 
 ## Results
 
-<!-- RESULTS -->
+All figures below are **out of sample**: at every point on the curve, the parameters being traded
+were chosen only from earlier data. Reproduce with
+`python -m tradingagent.cli --symbols BTC-USD --capital 100 --target 1000 --candidates 150`.
+
+### Headline - BTC-USD daily, traded 2017-07-29 -> 2026-09-12, five random seeds
+
+| | Agent (median of 5 seeds) | Buy & hold |
+|---|---|---|
+| Final equity from $100 | **$1,221** (range $731 - $1,526) | $27,720 |
+| Reached $1,000 | **5 of 5 seeds**, between 2020-12-16 and 2021-01-06 | yes |
+| Sharpe | 0.89 | - |
+| Max drawdown | -54% | **-84%** |
+| Calmar | 0.59 | - |
+| Trades / costs paid | 582 / $156 | 1 / $0.10 |
+
+Buy & hold made far more money and took a 84% drawdown to do it - on a $100 account that is the
+difference between a position you keep and one you capitulate out of. That trade-off, not the
+absolute return, is the claim this repo makes.
+
+### The caveat that matters more than the headline
+
+The same pipeline, run on histories that start in later years:
+
+| History starts | Trading starts | Agent (median of 3 seeds) | Reached $1,000 | Buy & hold |
+|---|---|---|---|---|
+| 2015-07 | 2017-07 | **$1,189** | 3 / 3 | $27,718 |
+| 2017-01 | 2019-01 | $406 | 1 / 3 | $7,916 |
+| 2018-01 | 2020-01 | $260 | 0 / 3 | $556 |
+| 2019-01 | 2021-01 | **$90** | 0 / 3 | $2,087 |
+| 2020-01 | 2022-01 | $107 | 0 / 3 | $1,075 |
+| 2021-01 | 2023-01 | $123 | 0 / 3 | $266 |
+| 2022-01 | 2024-01 | $120 | 0 / 3 | $167 |
+
+**Essentially all of the growth came from two crypto bull markets.** Any run whose trading begins
+after 2021 goes sideways, and the one that begins in January 2021 ends *below* its starting stake
+while BTC itself nearly doubled.
+
+Diagnosing that shortfall on the 2019-start window:
+
+| | Final equity from $100 |
+|---|---|
+| Walk-forward, normal costs | $105 |
+| Walk-forward, **zero** fees and slippage | $115 |
+| Fixed default config, no search | $74 |
+| Long-only search | $101 |
+| Buy & hold | $191 |
+
+Costs explain about $10 of it, and the search is adding value rather than destroying it (it beats
+the fixed configuration). What changed is the signal: **trend following on daily BTC bars had a
+strong edge through 2021 and a much weaker one since.**
+
+### Robustness
+
+- **Block bootstrap** of the realised out-of-sample returns (5,000 resampled histories):
+  59.5% reach $1,000, **0% are wiped out**, median final equity $1,014, 5th percentile $105,
+  95th percentile $11,330, typical worst drawdown -56%.
+- **Deflated Sharpe: 0.19 - 0.50**, counting 150 distinct configurations at the optimistic end and
+  2,850 evaluations at the pessimistic end. That straddles the 0.5 line, which is the honest
+  verdict: **an observed Sharpe of 0.89 over this sample is roughly what a search this wide could
+  produce from noise alone.** The equity curve may still reflect something real; this statistic
+  does not establish that it does.
+- **Diversification** helps risk, not return: BTC+ETH lifted Sharpe from ~0.91 to ~1.01 and cut
+  max drawdown from -50% to -39%, while the median final equity fell from ~$1,195 to ~$720.
+
+### What to take from this
+
+The framework does its job - it is hard to fool, and it says clearly when there is nothing there.
+The strategy inside it earned a 10x over a decade that contained two of the largest bull markets in
+any asset class, and has earned close to nothing since. If you fund this, fund it as a leveraged,
+drawdown-controlled bet on crypto trends resuming - not as a machine that turns $100 into $1,000 on
+a schedule.
 
 ---
 

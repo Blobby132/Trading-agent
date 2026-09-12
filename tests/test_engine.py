@@ -132,3 +132,12 @@ def test_buy_and_hold_benchmark_matches_price_path(trending_prices):
     ratio = bh.iloc[-1] / bh.iloc[0]
     price_ratio = trending_prices["close"].iloc[-1] / trending_prices["close"].iloc[0]
     assert ratio == pytest.approx(price_ratio, rel=1e-12)
+
+
+def test_a_full_exit_is_never_treated_as_dust(trending_prices):
+    """Going flat must always execute, however small the remaining position."""
+    w = pd.Series(0.03, index=trending_prices.index)   # a 3% position...
+    w.iloc[100:] = 0.0                                 # ...then flat
+    cfg = ExecutionConfig(initial_capital=100.0, min_trade_frac=0.25, fee_bps=0.0, slippage_bps=0.0)
+    res = BacktestEngine(cfg, NO_RISK_LAYER).run(trending_prices, w)
+    assert (res.weights.iloc[101:].abs().sum(axis=1) == 0).all(), "position lingered after the exit signal"
