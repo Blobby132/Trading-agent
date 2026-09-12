@@ -35,6 +35,10 @@ account - market data comes from Coinbase's public candle endpoint.
 https://colab.research.google.com/github/Blobby132/Trading-agent/blob/claude/trading-agent-backtest-sih2te/notebooks/Trading_Agent_Backtest.ipynb
 ```
 
+If that link does not resolve (the branch name contains slashes, which some Colab URL forms
+mishandle), open Colab, choose **File -> Open notebook -> GitHub**, enter `Blobby132/Trading-agent`,
+pick the `claude/trading-agent-backtest-sih2te` branch, and select the notebook.
+
 ### Locally
 
 ```bash
@@ -224,7 +228,7 @@ tradingagent/
   live.py         "what should I hold right now"
   cli.py          command-line entry point
 notebooks/        the Colab notebook
-tests/            84 tests, mostly about causality and accounting
+tests/            91 tests, mostly about causality and accounting
 ```
 
 ### Configuration
