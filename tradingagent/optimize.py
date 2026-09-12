@@ -1,0 +1,429 @@
+"""Walk-forward parameter selection.
+
+Choosing the best configuration over the whole history and then quoting its
+return is how backtests lie. Everything here is built to avoid that:
+
+* parameters are chosen on a **training window** and then traded, untouched,
+  on the **test window that follows it**;
+* the two windows are separated by an *embargo* so rolling indicators cannot
+  smear information across the boundary;
+* equity carries from one test window to the next, so the stitched curve is a
+  single, continuously-compounding account - which is exactly the thing the
+  $100 -> $1,000 question is about;
+* the reported statistics come only from the stitched out-of-sample curve.
+
+``combine_top_k`` goes one step further: instead of trading the single best
+configuration from the training window, it trades the average of the best *k*,
+which is far less sensitive to a lucky parameter cell.
+"""
+
+from __future__ import annotations
+
+import itertools
+from dataclasses import dataclass, field, replace
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
+
+import numpy as np
+import pandas as pd
+
+from .agent import AgentConfig, PortfolioAgent, TradingAgent
+from .engine import BacktestEngine, BacktestResult, ExecutionConfig
+from .metrics import summarize
+from .risk import RiskConfig
+from .strategies import DEFAULT_ENSEMBLE
+
+# --------------------------------------------------------------------------- #
+# search space
+# --------------------------------------------------------------------------- #
+STRATEGY_SUBSETS: List[List[str]] = [
+    list(DEFAULT_ENSEMBLE),
+    ["ema_trend", "donchian", "ts_momentum", "bollinger_breakout"],   # trend only
+    ["ema_trend", "donchian", "ts_momentum"],
+    ["donchian", "bollinger_breakout"],                               # breakout only
+    ["ema_trend", "ts_momentum", "rsi_pullback"],
+    ["ema_trend", "donchian", "ts_momentum", "mean_reversion"],
+]
+
+#: Parameters the optimiser is allowed to choose. Everything in here is a
+#: genuine modelling choice, not a curve-fit knob on a single trade.
+DEFAULT_SEARCH_SPACE: Dict[str, Sequence] = {
+    # ensemble
+    "strategies": list(range(len(STRATEGY_SUBSETS))),
+    "weighting": ["adaptive", "equal", "best"],
+    "perf_lookback": [60, 120, 250],
+    "softmax_temp": [2.0, 4.0, 8.0],
+    "regime_filter": [0, 1],
+    "regime_trend": [100, 200],
+    "signal_smooth": [1, 3, 5, 10],
+    "allow_short": [0, 1],
+    # per-strategy shape
+    "ema_fast": [10, 20, 50],
+    "ema_slow": [100, 150, 200],
+    "donchian_entry": [20, 40, 55],
+    "mom_lookback": [40, 60, 120],
+    # risk
+    "target_vol": [0.30, 0.50, 0.80],
+    "max_leverage": [1.0, 1.5, 2.0, 3.0],
+    "atr_stop_mult": [0.0, 4.0, 6.0, 8.0],
+    "trail_stop": [0, 1],
+    "max_drawdown_stop": [0.25, 0.35, 0.50],
+    # execution
+    "min_trade_frac": [0.05, 0.10, 0.20],
+    # multi-asset only (ignored when a single symbol is backtested)
+    "allocation": ["inverse_vol", "equal", "momentum"],
+    "max_positions": [0, 2, 3],
+}
+
+
+def params_to_configs(
+    params: Dict, base_exec: ExecutionConfig
+) -> Tuple[AgentConfig, RiskConfig, ExecutionConfig]:
+    """Turn one sampled point of the search space into the three config objects."""
+    names = STRATEGY_SUBSETS[int(params["strategies"])]
+    strategy_params: Dict[str, dict] = {}
+    if "ema_trend" in names:
+        strategy_params["ema_trend"] = {"fast": int(params["ema_fast"]), "slow": int(params["ema_slow"])}
+    if "donchian" in names:
+        entry = int(params["donchian_entry"])
+        strategy_params["donchian"] = {"entry": entry, "exit": max(5, entry // 3)}
+    if "ts_momentum" in names:
+        strategy_params["ts_momentum"] = {"lookback": int(params["mom_lookback"])}
+
+    agent_cfg = AgentConfig(
+        strategies=names,
+        strategy_params=strategy_params,
+        weighting=str(params["weighting"]),
+        perf_lookback=int(params["perf_lookback"]),
+        softmax_temp=float(params["softmax_temp"]),
+        regime_filter=bool(int(params["regime_filter"])),
+        regime_trend=int(params["regime_trend"]),
+        allow_short=bool(int(params["allow_short"])),
+        signal_smooth=int(params["signal_smooth"]),
+        periods_per_year=base_exec.periods_per_year,
+    )
+    risk_cfg = RiskConfig(
+        target_vol=float(params["target_vol"]),
+        max_leverage=float(params["max_leverage"]),
+        atr_stop_mult=float(params["atr_stop_mult"]),
+        trail_stop=bool(int(params["trail_stop"])),
+        max_drawdown_stop=float(params["max_drawdown_stop"]),
+    )
+    exec_cfg = replace(
+        base_exec,
+        min_trade_frac=float(params["min_trade_frac"]),
+        max_leverage=float(params["max_leverage"]),
+    )
+    return agent_cfg, risk_cfg, exec_cfg
+
+
+# --------------------------------------------------------------------------- #
+# objectives
+# --------------------------------------------------------------------------- #
+def _finite(x: float, default: float = -1e9) -> float:
+    return float(x) if x is not None and np.isfinite(x) else default
+
+
+def obj_sharpe(stats: Dict[str, float]) -> float:
+    return _finite(stats.get("sharpe"))
+
+
+def obj_calmar(stats: Dict[str, float]) -> float:
+    """Growth per unit of pain, with the denominator floored.
+
+    A raw CAGR/maxDD ratio explodes when a window happens to have a tiny
+    drawdown, and the optimiser then chases that artefact; flooring the
+    drawdown at 15% keeps the ranking sane.
+    """
+    g = _finite(stats.get("cagr"), -10.0)
+    mdd = abs(_finite(stats.get("max_drawdown"), -1.0))
+    return g / max(mdd, 0.15)
+
+
+def obj_growth(stats: Dict[str, float]) -> float:
+    """Log terminal wealth - pure compounding, drawdown-blind."""
+    final = stats.get("final_equity", 0.0)
+    init = max(stats.get("initial_equity", 1.0), 1e-9)
+    if final <= 0:
+        return -1e9
+    return float(np.log(final / init))
+
+
+def obj_target_growth(stats: Dict[str, float]) -> float:
+    """Compounding, but with ruin and deep drawdowns priced in.
+
+    This is the default because it matches the brief: get to the goal fast,
+    without a path that would have stopped you out - psychologically or
+    literally - before you got there.
+    """
+    if stats.get("bust"):
+        return -1e9
+    g = obj_growth(stats)
+    mdd = abs(_finite(stats.get("max_drawdown"), -1.0))
+    excess_dd = max(0.0, mdd - 0.25)
+    trades = stats.get("n_trades", 0)
+    thin = 0.5 if trades < 10 else 0.0   # a handful of trades is not evidence
+    return g - 8.0 * excess_dd**2 - thin
+
+
+OBJECTIVES: Dict[str, Callable[[Dict[str, float]], float]] = {
+    "sharpe": obj_sharpe,
+    "calmar": obj_calmar,
+    "growth": obj_growth,
+    "target_growth": obj_target_growth,
+}
+
+
+# --------------------------------------------------------------------------- #
+# evaluation of a single configuration
+# --------------------------------------------------------------------------- #
+def sized_weight_for(
+    data: pd.DataFrame | Dict[str, pd.DataFrame], params: Dict, base_exec: ExecutionConfig
+) -> Tuple[pd.Series | pd.DataFrame, ExecutionConfig, RiskConfig]:
+    """Full-history sized weight for one configuration (causal at every bar)."""
+    agent_cfg, risk_cfg, exec_cfg = params_to_configs(params, base_exec)
+    if isinstance(data, dict):
+        agent = PortfolioAgent(
+            list(data),
+            agent_cfg,
+            risk_cfg,
+            allocation=str(params.get("allocation", "inverse_vol")),
+            max_positions=int(params.get("max_positions", 0)),
+        )
+        return agent.target_weights(data), exec_cfg, risk_cfg
+    return TradingAgent(agent_cfg, risk_cfg).sized_weight(data), exec_cfg, risk_cfg
+
+
+def slice_data(data: pd.DataFrame | Dict[str, pd.DataFrame], window: slice):
+    if isinstance(data, dict):
+        return {k: v.iloc[window] for k, v in data.items()}
+    return data.iloc[window]
+
+
+def run_window(
+    data: pd.DataFrame | Dict[str, pd.DataFrame],
+    weights: pd.Series | pd.DataFrame,
+    window: slice,
+    exec_cfg: ExecutionConfig,
+    risk_cfg: RiskConfig,
+    initial_capital: float,
+) -> BacktestResult:
+    """Trade a pre-computed weight series over one slice of the history."""
+    cfg = replace(exec_cfg, initial_capital=float(initial_capital))
+    engine = BacktestEngine(cfg, risk_cfg)
+    return engine.run(slice_data(data, window), weights.iloc[window])
+
+
+# --------------------------------------------------------------------------- #
+# sampling
+# --------------------------------------------------------------------------- #
+def sample_params(rng: np.random.Generator, space: Dict[str, Sequence]) -> Dict:
+    return {k: v[int(rng.integers(len(v)))] for k, v in space.items()}
+
+
+def sample_unique(
+    n: int, space: Dict[str, Sequence], seed: int = 0, max_tries_factor: int = 20
+) -> List[Dict]:
+    """``n`` distinct configurations, or every configuration if the grid is small."""
+    total = int(np.prod([len(v) for v in space.values()]))
+    if total <= n:
+        keys = list(space)
+        return [dict(zip(keys, combo)) for combo in itertools.product(*[space[k] for k in keys])]
+    rng = np.random.default_rng(seed)
+    seen, out = set(), []
+    for _ in range(n * max_tries_factor):
+        p = sample_params(rng, space)
+        key = tuple(sorted(p.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+        if len(out) >= n:
+            break
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# walk-forward
+# --------------------------------------------------------------------------- #
+@dataclass
+class WalkForwardConfig:
+    train_bars: int = 730          # ~2 years of daily bars to fit on
+    test_bars: int = 182           # ~6 months traded out of sample
+    embargo_bars: int = 10         # gap so rolling windows cannot leak across
+    n_candidates: int = 150        # random configurations tried per fold
+    top_k: int = 5                 # configurations blended into the traded signal
+    objective: str = "target_growth"
+    max_train_drawdown: float = 0.45   # a candidate that drew down more than this
+                                       # in training is disqualified, however good
+                                       # its return was
+    seed: int = 0
+    verbose: bool = True
+
+
+@dataclass
+class WalkForwardResult:
+    equity: pd.Series
+    returns: pd.Series
+    folds: pd.DataFrame
+    chosen: List[List[Dict]]
+    exec_config: ExecutionConfig
+    risk_config: RiskConfig
+    weights: pd.DataFrame
+    n_evaluations: int = 0
+    meta: Dict[str, object] = field(default_factory=dict)
+
+    def stats(self, benchmark: Optional[pd.Series] = None) -> Dict[str, float]:
+        result = BacktestResult(
+            equity=self.equity,
+            returns=self.returns,
+            weights=self.weights,
+            target_weights=self.weights,
+            trades=self.meta.get("trades", pd.DataFrame()),
+            costs=self.meta.get("costs", pd.DataFrame(index=self.equity.index)),
+            exec_config=self.exec_config,
+            risk_config=self.risk_config,
+            meta={"bust": bool(self.equity.iloc[-1] <= self.exec_config.ruin_equity)},
+        )
+        return summarize(result, benchmark=benchmark)
+
+
+def walk_forward(
+    data: pd.DataFrame | Dict[str, pd.DataFrame],
+    base_exec: ExecutionConfig | None = None,
+    wf: WalkForwardConfig | None = None,
+    space: Dict[str, Sequence] | None = None,
+) -> WalkForwardResult:
+    """Fit, step forward, trade, repeat - and report only the traded part.
+
+    ``data`` is either one OHLCV frame or a dict of them (a portfolio sharing
+    one account, which must already be index-aligned - see
+    :func:`tradingagent.data.align_universe`).
+    """
+    base_exec = base_exec or ExecutionConfig()
+    wf = wf or WalkForwardConfig()
+    space = space or DEFAULT_SEARCH_SPACE
+    objective = OBJECTIVES[wf.objective]
+
+    candidates = sample_unique(wf.n_candidates, space, seed=wf.seed)
+    index = (data[next(iter(data))] if isinstance(data, dict) else data).index
+    n = len(index)
+
+    # every candidate's sized weight is computed once over the whole history;
+    # each value still only depends on bars at or before its own timestamp, so
+    # slicing it per fold is safe and saves recomputing the panel every fold
+    cached = [sized_weight_for(data, p, base_exec) for p in candidates]
+
+    equity_pieces: List[pd.Series] = []
+    weight_pieces: List[pd.Series | pd.DataFrame] = []
+    trade_pieces: List[pd.DataFrame] = []
+    cost_pieces: List[pd.DataFrame] = []
+    fold_rows: List[dict] = []
+    chosen_per_fold: List[List[Dict]] = []
+
+    capital = float(base_exec.initial_capital)
+    start = 0
+    fold_id = 0
+    evaluations = 0
+    last_exec, last_risk = base_exec, RiskConfig()
+
+    while start + wf.train_bars + wf.embargo_bars + 1 < n:
+        train = slice(start, start + wf.train_bars)
+        test_start = start + wf.train_bars + wf.embargo_bars
+        test_end = min(test_start + wf.test_bars, n)
+        if test_end - test_start < 5:
+            break
+        test = slice(test_start, test_end)
+
+        # ---- fit: score every candidate on the training window ---------- #
+        scored: List[Tuple[float, int]] = []
+        for idx, (w, ec, rc) in enumerate(cached):
+            res = run_window(data, w, train, ec, rc, base_exec.initial_capital)
+            stats = summarize(res)
+            score = objective(stats)
+            # A soft disqualification rather than a filter: if every candidate
+            # breaches the drawdown limit the ranking still works, it just
+            # ranks a field of bad options.
+            if abs(_finite(stats.get("max_drawdown"), -1.0)) > wf.max_train_drawdown:
+                score -= 1000.0
+            scored.append((score, idx))
+            evaluations += 1
+        scored.sort(key=lambda t: t[0], reverse=True)
+        top = [idx for _, idx in scored[: max(1, wf.top_k)]]
+        chosen_per_fold.append([candidates[i] for i in top])
+
+        # ---- trade: average the top-k weights over the test window ------ #
+        blended = sum(cached[i][0] for i in top) / len(top)
+        ec = cached[top[0]][1]
+        rc = cached[top[0]][2]
+        # blending configurations means blending their leverage caps too
+        ec = replace(ec, max_leverage=float(np.mean([cached[i][1].max_leverage for i in top])))
+        rc = replace(rc, max_leverage=ec.max_leverage)
+        last_exec, last_risk = ec, rc
+
+        res = run_window(data, blended, test, ec, rc, capital)
+        equity_pieces.append(res.equity)
+        weight_pieces.append(blended.iloc[test])
+        cost_pieces.append(res.costs)
+        if not res.trades.empty:
+            trade_pieces.append(res.trades)
+
+        fold_rows.append(
+            {
+                "fold": fold_id,
+                "train_start": index[train.start],
+                "train_end": index[train.stop - 1],
+                "test_start": index[test_start],
+                "test_end": index[test_end - 1],
+                "start_equity": capital,
+                "end_equity": float(res.equity.iloc[-1]),
+                "return": float(res.equity.iloc[-1] / capital - 1.0),
+                "max_drawdown": float((res.equity / res.equity.cummax() - 1.0).min()),
+                "trades": int(len(res.trades)),
+                "train_score": float(scored[0][0]),
+                "best_params": candidates[top[0]],
+            }
+        )
+        if wf.verbose:
+            row = fold_rows[-1]
+            print(
+                f"[fold {fold_id:>2}] test {row['test_start'].date()} -> {row['test_end'].date()}  "
+                f"${row['start_equity']:>9,.2f} -> ${row['end_equity']:>9,.2f}  "
+                f"({row['return']:+7.1%}, maxDD {row['max_drawdown']:6.1%})"
+            )
+
+        capital = max(float(res.equity.iloc[-1]), 0.0)
+        if capital <= base_exec.ruin_equity:
+            if wf.verbose:
+                print(f"[fold {fold_id}] account ruined - stopping walk-forward")
+            break
+        start += wf.test_bars
+        fold_id += 1
+
+    if not equity_pieces:
+        raise ValueError(
+            f"not enough data for a walk-forward: {n} bars, needs > "
+            f"{wf.train_bars + wf.embargo_bars + wf.test_bars}"
+        )
+
+    equity = pd.concat(equity_pieces)
+    equity = equity[~equity.index.duplicated(keep="last")].sort_index()
+    weights = pd.concat(weight_pieces)
+    weights = weights[~weights.index.duplicated(keep="last")].sort_index()
+    if isinstance(weights, pd.Series):
+        weights = weights.to_frame("asset")
+
+    return WalkForwardResult(
+        equity=equity.rename("equity"),
+        returns=equity.pct_change().fillna(0.0).replace([np.inf, -np.inf], 0.0),
+        folds=pd.DataFrame(fold_rows),
+        chosen=chosen_per_fold,
+        exec_config=last_exec,
+        risk_config=last_risk,
+        weights=weights,
+        n_evaluations=evaluations,
+        meta={
+            "trades": pd.concat(trade_pieces) if trade_pieces else pd.DataFrame(),
+            "costs": pd.concat(cost_pieces) if cost_pieces else pd.DataFrame(index=equity.index),
+            "n_candidates": len(candidates),
+        },
+    )

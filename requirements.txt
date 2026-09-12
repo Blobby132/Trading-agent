@@ -1,0 +1,6 @@
+numpy>=1.24
+pandas>=2.0
+matplotlib>=3.7
+requests>=2.28
+# Optional data sources (not required for the Coinbase/CSV/synthetic paths)
+yfinance>=0.2.40
