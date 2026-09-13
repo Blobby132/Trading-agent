@@ -63,6 +63,66 @@ US_LARGE_CAP: List[str] = [
     "PLD", "AMT", "PSA", "SPG", "O",
 ]
 
+#: ~400 liquid US names across every sector. Breadth is the one lever in this
+#: repo with no statistical catch: information ratio scales with the square root
+#: of the number of independent bets.
+US_LARGE_CAP_BROAD: List[str] = [
+  # ~400 liquid US names across every sector
+  "AAPL", "MSFT", "NVDA", "AVGO", "ORCL", "CSCO", "ADBE", "CRM", "AMD", "INTC", "TXN",
+  "QCOM", "IBM", "ACN", "ADI", "MU", "INTU", "NOW", "AMAT", "LRCX", "KLAC", "SNPS", "CDNS",
+  "ROP", "APH", "TEL", "MSI", "GLW", "HPQ", "HPE", "DELL", "NTAP", "STX", "WDC", "ON",
+  "MCHP", "SWKS", "MPWR", "TER", "ENPH", "FTNT", "PANW", "CRWD", "ZS", "OKTA", "DDOG", "NET",
+  "SNOW", "TEAM", "WDAY", "ANET", "AKAM", "VRSN", "GDDY", "EPAM", "CTSH", "IT",
+  "LDOS", "GOOGL", "META", "NFLX", "DIS", "CMCSA", "T", "VZ", "TMUS", "CHTR", "WBD", "PARA",
+  "OMC", "IPG", "EA", "TTWO", "LYV", "MTCH", "PINS", "SNAP", "RBLX", "AMZN", "TSLA", "HD",
+  "MCD", "NKE", "SBUX", "LOW", "TJX", "BKNG", "GM", "F", "ORLY", "AZO", "ROST", "YUM", "CMG",
+  "MAR", "HLT", "DRI", "DPZ", "LULU", "RL", "PVH", "TPR", "VFC", "HAS", "MAT", "WHR", "NWL",
+  "LEG", "GPC", "LKQ", "BBY", "DG", "DLTR", "KMX", "CCL", "RCL", "NCLH", "EXPE", "WMT",
+  "COST", "PG", "KO", "PEP", "PM", "MO", "MDLZ", "CL", "WBA", "KMB", "GIS", "K", "HSY",
+  "SYY", "KHC", "STZ", "TAP", "MNST", "KDP", "CHD", "CLX", "MKC", "CAG", "CPB", "SJM", "HRL",
+  "TSN", "ADM", "BG", "KR", "ACI", "CASY", "EL", "COTY", "UNH", "JNJ", "LLY", "ABBV", "MRK",
+  "PFE", "TMO", "ABT", "DHR", "AMGN", "GILD", "BMY", "MDT", "SYK", "BDX", "CVS", "ZTS",
+  "ISRG", "VRTX", "REGN", "BIIB", "MRNA", "CI", "ELV", "HUM", "CNC", "HCA", "UHS", "DVA",
+  "BAX", "BSX", "EW", "HOLX", "IDXX", "IQV", "A", "RMD", "STE", "WST", "PODD", "BRK-B",
+  "JPM", "V", "MA", "BAC", "WFC", "GS", "MS", "AXP", "BLK", "SPGI", "SCHW", "C", "CB", "PNC",
+  "AIG", "MET", "TRV", "ICE", "CME", "MCO", "AON", "MMC", "AJG", "WTW", "PGR", "ALL", "HIG",
+  "PRU", "AFL", "TROW", "BEN", "IVZ", "STT", "BK", "NTRS", "RJF", "FITB", "KEY", "CFG",
+  "HBAN", "RF", "MTB", "ZION", "CMA", "USB", "DFS", "COF", "SYF", "PYPL", "FIS", "FISV",
+  "GPN", "JKHY", "MSCI", "NDAQ", "CBOE", "CAT", "DE", "HON", "UPS", "RTX", "LMT", "GD", "BA",
+  "GE", "MMM", "EMR", "ITW", "NSC", "FDX", "ETN", "PH", "CMI", "PCAR", "ROK", "DOV", "XYL",
+  "AME", "FTV", "IEX", "SWK", "PNR", "AOS", "GWW", "FAST", "MAS", "JCI", "CARR", "OTIS",
+  "TT", "LII", "WAB", "CSX", "UNP", "LUV", "DAL", "UAL", "AAL", "TXT", "HII", "LHX",
+  "NOC", "URI", "PWR", "J", "ACM", "EFX", "VRSK", "RSG", "WM", "CTAS", "PAYX", "LIN", "APD",
+  "SHW", "NEM", "ECL", "DD", "DOW", "LYB", "PPG", "NUE", "STLD", "FCX", "VMC", "MLM", "ALB",
+  "CE", "EMN", "IFF", "CF", "MOS", "XOM", "CVX", "COP", "SLB", "EOG", "PSX", "MPC", "VLO",
+  "OXY", "KMI", "WMB", "HAL", "DVN", "FANG", "BKR", "OKE", "TRGP", "APA",
+  "NEE", "DUK", "SO", "D", "AEP", "EXC", "XEL", "SRE", "PEG", "ED", "WEC", "ES", "AEE",
+  "CMS", "DTE", "FE", "PPL", "CNP", "NI", "LNT", "EVRG", "AES", "ATO", "NRG", "PNW", "PLD",
+  "AMT", "PSA", "SPG", "O", "CCI", "EQIX", "DLR", "WELL", "AVB", "EQR", "VTR", "ESS", "MAA",
+  "UDR", "ARE", "BXP", "HST", "KIM", "REG", "FRT", "IRM", "WY", "SBAC", "EXR", "CPT", 
+]
+
+#: Names that *were* large and then failed, were acquired, or were taken private.
+#: A list of today's large caps silently omits every one of them, which is
+#: exactly what survivorship bias is. Adding them back does not fully fix it -
+#: the list is still assembled by hindsight - but it removes the crudest part of
+#: the distortion, and the engine already handles a name that stops trading.
+#:
+#: Yahoo serves most of these; Nasdaq's quote API serves none of them, because
+#: it is a live-quote service. Use ``source="yahoo"`` when this list matters.
+DELISTED_LARGE_CAP: List[str] = [
+    # delisted, acquired or failed after being large
+    "SIVB", "FRC", "SBNY", "CS", "TWTR", "ATVI", "XLNX", "PXD", "CTXS", "NLSN", "VIAB",
+    "DISCA", "WRK", "SPLS", "FTR", "MRO", "HES", "ANSS", "JNPR", "ALK", "RE", "ABMD", "CERN",
+    "ZNGA", "PEAK", "DRE", "PBCT", "XEC", "WLTW", "INFO", "MXIM", "FLIR", "ALXN", "TIF",
+    "ETFC", "AGN", "CXO", "NBL", "TCF", "VAR",
+]
+
+#: The broad universe plus the names that did not survive it.
+US_LARGE_CAP_SURVIVORSHIP_FREE: List[str] = list(
+    dict.fromkeys(US_LARGE_CAP_BROAD + DELISTED_LARGE_CAP)
+)
+
 #: Coinbase USD pairs with enough history to rank against one another.
 CRYPTO_MAJORS: List[str] = [
     "BTC-USD", "ETH-USD", "LTC-USD", "BCH-USD", "LINK-USD", "XLM-USD", "ADA-USD",
@@ -78,6 +138,9 @@ US_LARGE_CAP_SMALL: List[str] = [
 
 UNIVERSES: Dict[str, List[str]] = {
     "us_large_cap": US_LARGE_CAP,
+    "us_large_cap_broad": US_LARGE_CAP_BROAD,
+    "us_large_cap_survivorship_free": US_LARGE_CAP_SURVIVORSHIP_FREE,
+    "delisted_large_cap": DELISTED_LARGE_CAP,
     "us_large_cap_small": US_LARGE_CAP_SMALL,
     "crypto_majors": CRYPTO_MAJORS,
 }
