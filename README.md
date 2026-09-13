@@ -1,8 +1,13 @@
-# Trading agent: $100 -> $1,000, backtested honestly
+# Trading agents, backtested honestly
 
-A compounding trading agent for a small account, with a backtest framework built around the
-one question that matters for a $100 stake: **can it reach $1,000, how long does it take, and
-what does it have to survive on the way?**
+Two trading agents and a backtest framework built to be hard to fool.
+
+**Part one** is a compounding agent for a single asset, built around the question that matters for a
+$100 stake: *can it reach $1,000, how long does it take, and what does it have to survive on the way?*
+
+**Part two** is a cross-sectional agent that ranks 100+ stocks against each other and learns which
+factors to weight — and a measurement of whether that learning is worth anything. (Short version: on
+this data it lost to a fixed rule that never learns. [Jump to it](#part-two-the-cross-sectional-agent-100-stocks-and-a-learner).)
 
 The hard part of this problem is not writing a strategy. It is writing a backtest that does not
 lie to you. Two things make a backtest lie, and both are addressed structurally here rather than
@@ -27,12 +32,15 @@ between the account and the target.
 
 ### Google Colab (the intended way)
 
-Open `notebooks/Trading_Agent_Backtest.ipynb` in Colab and run all cells. The first cell clones
-this repo and installs dependencies; everything else runs top to bottom with no API keys and no
-account - market data comes from Coinbase's public candle endpoint.
+Two notebooks, each self-contained — the first cell clones this repo and installs dependencies, and
+everything else runs top to bottom with no API keys and no account:
+
+- `notebooks/Trading_Agent_Backtest.ipynb` — part one, the single-asset agent (Coinbase data)
+- `notebooks/Cross_Sectional_Stock_Agent.ipynb` — part two, 124 stocks and the learner (Yahoo data)
 
 ```
 https://colab.research.google.com/github/Blobby132/Trading-agent/blob/claude/trading-agent-backtest-sih2te/notebooks/Trading_Agent_Backtest.ipynb
+https://colab.research.google.com/github/Blobby132/Trading-agent/blob/claude/trading-agent-backtest-sih2te/notebooks/Cross_Sectional_Stock_Agent.ipynb
 ```
 
 If that link does not resolve (the branch name contains slashes, which some Colab URL forms
@@ -49,6 +57,9 @@ python -m tradingagent.cli --symbols BTC-USD --capital 100 --target 1000
 
 # a portfolio sharing the same $100
 python -m tradingagent.cli --symbols BTC-USD ETH-USD LINK-USD --candidates 200
+
+# rank 124 US large caps against each other, learning the factor weights as it goes
+python -m tradingagent.cli --mode cross-section --universe us_large_cap --capital 100
 
 # no network? the synthetic simulator exercises the whole pipeline offline
 python -m tradingagent.cli --source synthetic --symbols SYN --mode single
@@ -253,23 +264,138 @@ a schedule.
 
 ---
 
+## Part two: the cross-sectional agent (100+ stocks, and a learner)
+
+The single-asset agent above asks *"will BTC go up?"* — a question whose answer is mostly the
+market's move, which is why its edge is so hard to separate from noise. The second agent asks a
+different one: **"which of these 124 names will beat the others?"** The market component cancels,
+and one universe gives 124 comparisons a day instead of one forecast.
+
+It is also the design the "let it try strategies and keep what works" idea actually needs. Three
+models compete, in increasing order of how much they learn:
+
+| Model | Learns? | What it is |
+|---|---|---|
+| `mom_only` | no | one factor: 12-month momentum, skipping the last month |
+| `equal_blend` | no | fixed signed blend of all eleven factors |
+| `ridge` | **yes** | fits factor weights on each training window, refitted every fold |
+
+Every six months the loop refits, rescores all three, and trades the best few — coefficients *and*
+model choice are re-decided. That is the adaptive agent, made concrete.
+
+```bash
+python -m tradingagent.cli --mode cross-section --universe us_large_cap --capital 100
+python -m tradingagent.cli --mode cross-section --universe crypto_majors --source coinbase --allow-short
+```
+
+### The result: the agent that learns lost to the rule that does not
+
+![Learning vs not learning](docs/cross_sectional.png)
+
+124 US large caps, out of sample 2019-10-14 → 2026-09-11, $100 start, 5 bps fee + 3 bps slippage
+per side:
+
+| Strategy | Learns? | Final | Sharpe | Max drawdown |
+|---|---|---|---|---|
+| **fixed momentum, top decile, monthly** | no | **$695** | 1.11 | -32% |
+| fixed momentum, top quintile, monthly | no | $387 | 0.94 | -32% |
+| adaptive search, long/short | **yes** | $339 | 0.80 | -35% |
+| equal-weight universe (benchmark) | no | $253 | 0.79 | -36% |
+| fixed equal blend, long-only | no | $239 | 0.71 | -31% |
+| **adaptive search, long-only** | **yes** | **$207** | 0.53 | -32% |
+| fixed momentum, long/short | no | $88 | -0.09 | -35% |
+| fixed equal blend, long/short | no | $63 | -0.49 | -46% |
+
+And it is not a lucky cell. Sweeping the whole neighbourhood — four momentum definitions × three
+concentration levels × three rebalance frequencies, 36 fixed variants:
+
+- median final equity **$315**, range $211 – $719
+- **100%** of them beat the adaptive long-only agent ($207)
+- **81%** beat the equal-weight benchmark ($253)
+
+### Why the learner lost
+
+Not a bug, and not a bad implementation. The reason is structural, and it is the same one that
+sank the deflated Sharpe in part one:
+
+1. **The selection step has its own error, and here it exceeds its benefit.** Choosing among 50
+   candidates on three years of noisy data, fourteen times over, is fourteen chances to pick
+   whatever got lucky in-sample. The deflated Sharpe for the adaptive runs is **0.04 – 0.42** —
+   below 0.5 at both ends.
+2. **Momentum is a strong prior; three years of data is a weak one.** The fixed rule encodes three
+   decades of published evidence. The ridge model re-derives it badly from each window, and
+   sometimes derives something else — the per-fold coefficient heatmap in the notebook shows the
+   learned weights moving around (mean consecutive correlation 0.46 long-only, 0.60 long/short).
+3. **Adaptation costs turnover.** Each time the chosen model changes, the book turns over. The
+   fixed rule's positions persist.
+
+The one place selection clearly earned its keep: in the **long/short** arm it returned $339 against
+$88 and $63 for the naive fixed long/short rules. There the configurations it was choosing between
+were genuinely bad, and picking among them mattered.
+
+### What I would build next, given this
+
+The lesson is not "don't learn". It is **learn what is estimable, and take priors for what is not**:
+
+| Estimable from a few years | Not estimable from a few years |
+|---|---|
+| volatility, correlation, beta | which factor has an edge |
+| transaction costs, capacity | the sign of a weak signal |
+| position sizing, risk budgets | whether this regime is different |
+
+So: fix the factor set from the literature, and point the learning at **risk** — volatility
+targeting, correlation-aware sizing, drawdown control — where a few years of data genuinely does
+contain the answer. Then add breadth: information ratio scales with the square root of the number
+of independent bets, and that is the only lever here with no statistical catch.
+
+### Practical constraints at $100
+
+- **Long/short is the version cross-sectional strategies are built for, and a $100 US cash account
+  cannot run it.** Shorting requires margin (Reg T minimum $2,000); more than three day trades in
+  five days triggers the pattern-day-trader rule ($25,000). The long-only path is the one that is
+  actually available, which is why it is the default.
+- **Fractional shares are mandatory.** $100 across twelve names is $8.33 each — not one whole share
+  of most large caps.
+- Liquid large caps only: a small-cap spread would eat the account.
+
+### Data caveats specific to this part
+
+- **Survivorship.** `US_LARGE_CAP` is a list of names that are liquid *today*. It deliberately
+  includes conspicuous laggards (INTC, BA, GE, PFE, T, VZ, CVS, PARA) rather than only winners, and
+  a ranking model is far less exposed than a long-only one — the bias lifts all names roughly
+  equally. It is still there. Point-in-time index membership is the only real fix and no free
+  source provides it.
+- **The numbers above use the Nasdaq fallback**, which is split-adjusted but *not*
+  dividend-adjusted, because Yahoo rate-limited the machine these were measured on. That
+  understates high-yield names (utilities, telecoms, energy) by a few percent a year — a systematic
+  cross-sectional tilt, not noise. The notebook defaults to Yahoo's total-return adjusted closes,
+  so your run will differ, and should be trusted over these.
+
+---
+
 ## Layout
 
 ```
 tradingagent/
-  data.py         Coinbase / Yahoo / CSV loaders, disk cache, synthetic simulator
-  indicators.py   causal technical features
-  strategies.py   six signal generators + a registry
-  agent.py        the ensemble, adaptive weighting, regime filter, portfolio version
-  risk.py         volatility targeting, Kelly, ATR stops, drawdown kill switch
-  engine.py       execution, costs, leverage, compounding, ruin
-  optimize.py     walk-forward search, objectives, top-k blending
-  metrics.py      statistics, time-to-target, bootstrap, deflated Sharpe
-  report.py       tearsheet plots
-  live.py         "what should I hold right now"
-  cli.py          command-line entry point
-notebooks/        the Colab notebook
-tests/            91 tests, mostly about causality and accounting
+  data.py           Coinbase / Yahoo / Nasdaq / CSV loaders, disk cache, simulator
+  indicators.py     causal technical features
+  strategies.py     six single-asset signal generators + a registry
+  agent.py          the ensemble, adaptive weighting, regime filter
+  risk.py           volatility targeting, Kelly, ATR stops, drawdown kill switch
+  engine.py         execution, costs, leverage, compounding, ruin, delisting
+  optimize.py       single-asset walk-forward search, objectives, top-k blending
+  universe.py       named universes + the wide Panel (dates x symbols)
+  features.py       eleven cross-sectional factors, standardised across names
+  cross_section.py  three rankers (one fixed, one blended, one learned) + sizing
+  xs_optimize.py    the cross-sectional walk-forward learning loop
+  metrics.py        statistics, time-to-target, bootstrap, deflated Sharpe
+  report.py         tearsheet plots
+  live.py           "what should I hold right now" - single name and basket
+  cli.py            command-line entry point
+notebooks/
+  Trading_Agent_Backtest.ipynb       part one: the single-asset agent
+  Cross_Sectional_Stock_Agent.ipynb  part two: 124 stocks and the learner
+tests/              147 tests, mostly about causality and accounting
 ```
 
 ### Configuration
