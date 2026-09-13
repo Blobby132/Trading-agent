@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 
 from . import indicators as ind
+from .execution import BASE_COST, CostModel, ExecutionModel, plan_rebalance
 from .risk import RiskConfig
 
 
@@ -54,6 +55,39 @@ class ExecutionConfig:
                                      # hundred names are rebalanced thousands of
                                      # times, and the search only reads summary
                                      # statistics
+    #: The canonical cost model. When None one is derived from ``fee_bps`` and
+    #: ``slippage_bps`` so existing callers keep their exact assumptions; pass a
+    #: :class:`~tradingagent.execution.CostModel` to opt into spread and impact
+    #: modelling, or use ``execution.cost_scenario("low"|"base"|"high")``.
+    costs: Optional[CostModel] = None
+    #: Where a fill happens relative to the bar that produced the signal.
+    fill_at: str = "next_open"
+
+    def cost_model(self) -> CostModel:
+        """The cost model this config implies.
+
+        Derived from the legacy bps fields when none was supplied, which keeps
+        every historical result reproducible: the spread component is folded
+        into slippage rather than added on top.
+        """
+        if self.costs is not None:
+            return self.costs
+        return CostModel(
+            fee_bps=self.fee_bps,
+            half_spread_bps=0.0,
+            slippage_bps=self.slippage_bps,
+            impact_bps_at_full=0.0,
+            borrow_rate=self.borrow_rate,
+            short_rate=self.short_rate,
+            name="derived",
+        )
+
+    def execution_model(self) -> ExecutionModel:
+        return ExecutionModel(
+            fill_at=self.fill_at,
+            costs=self.cost_model(),
+            min_trade_frac=self.min_trade_frac,
+        )
 
 
 @dataclass
@@ -106,10 +140,14 @@ class BacktestEngine:
         # the decision at bar t is filled at the open of bar t + 1
         tw_exec = tw.shift(1).fillna(0.0)
 
+        ec, rc = self.exec, self.risk
+        exec_model = ec.execution_model()
+
         opens = np.column_stack([panel[s]["open"].to_numpy() for s in symbols])
         highs = np.column_stack([panel[s]["high"].to_numpy() for s in symbols])
         lows = np.column_stack([panel[s]["low"].to_numpy() for s in symbols])
         closes = np.column_stack([panel[s]["close"].to_numpy() for s in symbols])
+        volumes = np.column_stack([panel[s]["volume"].to_numpy() for s in symbols])
 
         # A symbol that has not listed yet - or has stopped trading - is NaN.
         # Tradeability is decided on the OPEN alone, because that is all you
@@ -117,7 +155,9 @@ class BacktestEngine:
         # print is not knowable at the open, and requiring it would let the
         # backtest skip a name on its final day using information from the end
         # of that day.
-        tradeable = np.isfinite(opens) & (opens > 0)
+        # the price a scheduled order actually executes against
+        fills = opens if ec.fill_at == "next_open" else closes
+        tradeable = np.isfinite(fills) & (fills > 0)
         # Marking falls back to the open, then to the last price that printed,
         # so the arithmetic stays finite through a half-formed bar.
         mark_df = pd.DataFrame(closes).where(np.isfinite(closes) & (closes > 0), pd.DataFrame(opens))
@@ -134,8 +174,8 @@ class BacktestEngine:
         w_des = tw_exec.to_numpy()
 
         n_bars, n_assets = closes.shape
-        ec, rc = self.exec, self.risk
-        cost_rate = (ec.fee_bps + ec.slippage_bps) / 1e4
+        cost_rate = exec_model.costs.rate()
+        impact_on = exec_model.costs.impact_bps_at_full > 0
 
         cash = float(ec.initial_capital)
         units = np.zeros(n_assets)
@@ -228,30 +268,36 @@ class BacktestEngine:
             if gross > ec.max_leverage and gross > 0:
                 desired *= ec.max_leverage / gross
 
-            # ---- fill at this bar's open ------------------------------- #
-            px_open = np.where(live, opens[i], mark[i])
-            target_units = np.where(
-                live, desired * equity_prev / np.where(live, np.maximum(opens[i], 1e-12), 1.0), 0.0
+            # ---- fill at the execution reference price ----------------- #
+            # Sizing, dust filtering and fill pricing all come from the shared
+            # planner in execution.py, so the backtest and the paper account
+            # cannot drift apart. The reference is this bar's open (or close,
+            # under fill_at="next_close"); the weight being filled was formed on
+            # the previous bar's close.
+            px_open = np.where(live, fills[i], mark[i])
+            plan = plan_rebalance(
+                desired,
+                units,
+                equity_prev,
+                px_open,
+                model=exec_model,
+                tradeable=live,
+                symbols=tuple(symbols),
+                bar_volume=volumes[i] if impact_on else None,
             )
-            delta = target_units - units
-            notional = np.abs(delta) * px_open
-            # Ignore dust: rebalancing noise is pure cost. The threshold is a
-            # fraction of the *position* being adjusted, not of the account.
-            # Measured against equity it would be meaningless across book sizes:
-            # for a single full-size holding the two are identical, but in a
-            # 20-name portfolio each position is ~5% of equity, so a 10%-of-equity
-            # floor blocks every trade the strategy ever wants to make.
-            # Closing a position out entirely is never dust - suppressing that
-            # would leave a stale holding open long after the signal went flat.
-            full_exit = (target_units == 0.0) & (units != 0.0)
-            position_ref = np.maximum(np.abs(target_units), np.abs(units)) * px_open
-            too_small = (notional < ec.min_trade_frac * position_ref) & ~full_exit
-            delta = np.where(too_small, 0.0, delta)
-            notional = np.abs(delta) * px_open
+            delta = plan.delta_units
+            notional = plan.notional
 
-            for j in np.nonzero(delta)[0]:
-                fee = notional[j] * cost_rate
-                cash -= delta[j] * px_open[j] + fee
+            for j in plan.nonzero():
+                # the adverse fill price already carries fee + spread + slippage
+                # + impact, so the cash flow is delta x fill_price and nothing
+                # else. Components are split out only for reporting.
+                fill_px = float(plan.fill_price[j])
+                # the cost actually paid is the gap between the reference price
+                # and the fill, times the size - which carries impact when the
+                # cost model charges it
+                fee = abs(delta[j] * (fill_px - px_open[j]))
+                cash -= delta[j] * fill_px
                 bar_fees += fee
                 prev_units = units[j]
                 units[j] += delta[j]
@@ -262,7 +308,8 @@ class BacktestEngine:
                             "symbol": symbols[j],
                             "side": "buy" if delta[j] > 0 else "sell",
                             "units": float(delta[j]),
-                            "price": float(px_open[j]),
+                            "price": float(fill_px),
+                            "reference_price": float(px_open[j]),
                             "notional": float(notional[j]),
                             "cost": float(fee),
                             "reason": "rebalance",
@@ -339,10 +386,8 @@ class BacktestEngine:
             gross_exposure = float(np.abs(exposure).sum())
             short_notional = float(np.abs(np.minimum(exposure, 0.0)).sum())
             mtm_equity = cash + float(exposure.sum())
-            borrowed = max(gross_exposure - max(mtm_equity, 0.0), 0.0)
-            financing = (
-                borrowed * ec.borrow_rate / ec.periods_per_year
-                + short_notional * ec.short_rate / ec.periods_per_year
+            financing = exec_model.costs.financing_per_bar(
+                gross_exposure, mtm_equity, short_notional, ec.periods_per_year
             )
             cash -= financing
 

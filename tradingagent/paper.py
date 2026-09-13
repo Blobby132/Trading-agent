@@ -33,6 +33,7 @@ import numpy as np
 import pandas as pd
 
 from .cross_section import PortfolioRules, SingleFeatureRanker, scores_to_weights
+from .execution import DEFAULT_EXECUTION, ExecutionModel, plan_rebalance
 from .features import feature_panel
 from .universe import UNIVERSES, Panel, load_panel
 
@@ -60,6 +61,12 @@ class PaperAccount:
     positions: Dict[str, Position] = field(default_factory=dict)
     history: List[dict] = field(default_factory=list)      # one row per mark
     orders: List[dict] = field(default_factory=list)       # every fill
+    #: Orders decided on a bar's close and waiting for the next execution
+    #: opportunity. They are NOT positions yet. Persisting them is what makes
+    #: paper trading obey the same one-bar lag the backtest does: you cannot
+    #: decide and fill in the same instant.
+    pending: List[dict] = field(default_factory=list)
+    fill_at: str = "next_open"
     universe: str = "us_large_cap"
     source: str = "yahoo"
     strategy: str = "mom_12_1"
@@ -68,6 +75,13 @@ class PaperAccount:
     started: str = ""
     expected_annual_return: float = 0.0    # what the backtest said, for comparison
     expected_annual_vol: float = 0.0
+    #: Cost scenario name; resolved against execution.COST_SCENARIOS.
+    cost_scenario: str = "base"
+    #: Bars per year, used to accrue financing at the same rate the engine does.
+    periods_per_year: float = 252.0
+    #: Index position of the last bar financing was charged for, so an
+    #: irregularly-marked account still accrues one bar's cost per bar.
+    last_financed_bar: Optional[str] = None
 
     # ------------------------------------------------------------------ #
     @classmethod
@@ -103,84 +117,261 @@ class PaperAccount:
         weights = scores_to_weights(SingleFeatureRanker(self.strategy).score(feats), rules)
         return weights.iloc[-1]
 
-    def plan_orders(
-        self, panel: Panel, *, min_trade_frac: float = 0.10
-    ) -> pd.DataFrame:
-        """What to buy and sell to reach the target basket.
+    def execution_model(self, min_trade_frac: float = 0.10) -> ExecutionModel:
+        """The same execution model the backtest uses, from the same scenario."""
+        from .execution import cost_scenario
 
-        Sized against the *last close*, executed at the next open - the same
-        timing the backtest uses, so the two stay comparable. A full exit is
-        never suppressed as dust.
+        return ExecutionModel(
+            fill_at=self.fill_at,
+            costs=cost_scenario(self.cost_scenario),
+            min_trade_frac=min_trade_frac,
+        )
+
+    def plan_orders(
+        self, panel: Panel, *, min_trade_frac: float = 0.10,
+        target: Optional[pd.Series] = None,
+    ) -> pd.DataFrame:
+        """Orders that would move the book to its target basket.
+
+        Decided on the **last closed bar**, and deliberately NOT executed here:
+        the prices used for sizing are the execution reference the next bar will
+        provide, which does not exist yet. :meth:`schedule_orders` records them
+        as pending; :meth:`fill_pending` executes them once that bar arrives.
+
+        Sizing therefore uses the last close as an *estimate* of the execution
+        price, and the fill re-sizes against the price that actually printed -
+        exactly what a notional (fractional-share) order does.
         """
         prices = panel.close.iloc[-1]
         equity = self.equity(prices)
-        target = self.target_basket(panel)
+        if target is None:
+            target = self.target_basket(panel)
 
+        symbols = sorted(set(target.index) | set(self.positions))
+        current = np.array([
+            self.positions[s].shares if s in self.positions else 0.0 for s in symbols
+        ])
+        reference = np.array([float(prices.get(s, np.nan)) for s in symbols])
+        weights = np.array([float(target.get(s, 0.0)) for s in symbols])
+
+        plan = plan_rebalance(
+            weights, current, equity, reference,
+            model=self.execution_model(min_trade_frac),
+            symbols=tuple(symbols),
+        )
         rows = []
-        universe = set(target.index) | set(self.positions)
-        for sym in sorted(universe):
-            price = float(prices.get(sym, np.nan))
-            if not np.isfinite(price) or price <= 0:
-                continue
-            want_weight = float(target.get(sym, 0.0))
-            want_shares = want_weight * equity / price
-            have_shares = self.positions[sym].shares if sym in self.positions else 0.0
-            delta = want_shares - have_shares
-            if abs(delta) < 1e-12:
-                continue
-            position_ref = max(abs(want_shares), abs(have_shares)) * price
-            full_exit = want_shares == 0.0 and have_shares != 0.0
-            if not full_exit and abs(delta) * price < min_trade_frac * position_ref:
-                continue
-            rows.append(
-                {
-                    "symbol": sym,
-                    "side": "BUY" if delta > 0 else "SELL",
-                    "shares": abs(delta),
-                    "price": price,
-                    "notional": abs(delta) * price,
-                    "target_weight": want_weight,
-                    "current_weight": have_shares * price / equity if equity else 0.0,
-                }
-            )
+        for j in plan.nonzero():
+            delta = float(plan.delta_units[j])
+            rows.append({
+                "symbol": symbols[j],
+                "side": "BUY" if delta > 0 else "SELL",
+                "shares": abs(delta),
+                "target_weight": float(weights[j]),
+                "estimated_price": float(reference[j]),
+                "estimated_notional": float(plan.notional[j]),
+                "decided_on": panel.index[-1].isoformat(),
+            })
         return pd.DataFrame(rows)
 
-    def apply_orders(
-        self, orders: pd.DataFrame, prices: pd.Series, as_of: pd.Timestamp, *, cost_bps: float = 8.0
-    ) -> None:
-        """Record fills. Costs are charged the same way the backtest charges them."""
+    def schedule_orders(self, orders: pd.DataFrame, decided_on: pd.Timestamp) -> int:
+        """Queue orders for the next execution opportunity.
+
+        Replaces any orders still pending: a basket decided today supersedes one
+        decided yesterday that never filled.
+        """
+        self.pending = []
+        if orders is None or orders.empty:
+            return 0
         for _, row in orders.iterrows():
-            sym = row["symbol"]
-            price = float(prices.get(sym, row["price"]))
-            shares = float(row["shares"]) * (1 if row["side"] == "BUY" else -1)
-            cost = abs(shares) * price * cost_bps / 1e4
-            self.cash -= shares * price + cost
+            self.pending.append({
+                "symbol": row["symbol"],
+                "side": row["side"],
+                "target_weight": float(row.get("target_weight", 0.0)),
+                "estimated_price": float(row.get("estimated_price", np.nan)),
+                "decided_on": pd.Timestamp(decided_on).isoformat(),
+            })
+        return len(self.pending)
 
-            existing = self.positions.get(sym)
-            new_shares = (existing.shares if existing else 0.0) + shares
-            if abs(new_shares) < 1e-9:
-                self.positions.pop(sym, None)
-            elif existing and np.sign(new_shares) == np.sign(existing.shares) and shares > 0:
-                total_cost = existing.avg_price * existing.shares + price * shares
-                self.positions[sym] = Position(sym, new_shares, total_cost / new_shares)
-            elif existing:
-                self.positions[sym] = Position(sym, new_shares, existing.avg_price)
-            else:
-                self.positions[sym] = Position(sym, new_shares, price)
+    def fill_pending(self, panel: Panel, *, min_trade_frac: float = 0.10) -> pd.DataFrame:
+        """Execute queued orders against the current bar's execution price.
 
-            self.orders.append(
-                {
-                    "at": as_of.isoformat(),
-                    "symbol": sym,
-                    "side": row["side"],
-                    "shares": float(row["shares"]),
-                    "price": price,
-                    "cost": cost,
-                }
+        Refuses to fill on the bar the orders were decided on. That single check
+        is what keeps paper trading causally honest, and
+        ``tests/test_execution_parity.py`` fails loudly if it is ever removed.
+        """
+        if not self.pending:
+            return pd.DataFrame()
+
+        bar = panel.index[-1]
+        decided = pd.Timestamp(self.pending[0]["decided_on"])
+        if bar <= decided:
+            raise ValueError(
+                f"orders were decided on {decided.date()} and cannot fill on {bar.date()}; "
+                "a signal formed at a bar's close executes at the NEXT bar's "
+                "execution price, never that same bar"
             )
 
+        model = self.execution_model(min_trade_frac)
+        column = model.fill_column()
+        reference_row = getattr(panel, column).iloc[-1]
+        # Size against equity as of the last close BEFORE this bar. Using this
+        # bar's close would be a look-ahead: it prints after the open the order
+        # fills at. The backtest sizes the same way (its `equity_prev`).
+        prior_close = panel.close.iloc[-2] if len(panel) > 1 else panel.close.iloc[-1]
+        equity = self.equity(prior_close)
+
+        symbols = [o["symbol"] for o in self.pending]
+        weights = np.array([o["target_weight"] for o in self.pending])
+        current = np.array([
+            self.positions[s].shares if s in self.positions else 0.0 for s in symbols
+        ])
+        reference = np.array([float(reference_row.get(s, np.nan)) for s in symbols])
+
+        volume = np.array([float(panel.volume.iloc[-1].get(s, np.nan)) for s in symbols])
+        plan = plan_rebalance(
+            weights, current, equity, reference,
+            model=model, symbols=tuple(symbols), bar_volume=volume,
+        )
+        filled = self._execute_plan(plan, symbols, bar, model)
+        self.pending = []
+        return filled
+
+    def _execute_plan(self, plan, symbols, as_of, model) -> pd.DataFrame:
+        """Book the fills from a plan. The only place paper positions change."""
+        rows = []
+        for j in plan.nonzero():
+            sym = symbols[j]
+            shares = float(plan.delta_units[j])
+            fill_px = float(plan.fill_price[j])
+            reference = float(plan.reference_price[j])
+            cost = abs(shares * (fill_px - reference))
+            components = model.costs.split(plan.notional[j])
+            # rescale the split so the parts sum to what was actually paid
+            total_split = sum(components.values())
+            if total_split > 0:
+                components = {k: v * cost / total_split for k, v in components.items()}
+            # the adverse fill price already carries every cost component
+            self.cash -= shares * fill_px
+            self._book(sym, shares, fill_px)
+            record = {
+                "at": pd.Timestamp(as_of).isoformat(),
+                "symbol": sym,
+                "side": "BUY" if shares > 0 else "SELL",
+                "shares": abs(shares),
+                "price": fill_px,
+                "reference_price": reference,
+                "notional": float(plan.notional[j]),
+                "cost": cost,
+                **components,
+            }
+            self.orders.append(record)
+            rows.append(record)
+        return pd.DataFrame(rows)
+
+    def _book(self, symbol: str, shares: float, price: float) -> None:
+        """Update one position, keeping the average price honest on both sides."""
+        existing = self.positions.get(symbol)
+        prior = existing.shares if existing else 0.0
+        new_shares = prior + shares
+        if abs(new_shares) < 1e-9:
+            self.positions.pop(symbol, None)
+            return
+        if existing is None or prior == 0.0 or np.sign(new_shares) != np.sign(prior):
+            # opening, or flipping through zero: the basis resets
+            self.positions[symbol] = Position(symbol, new_shares, price)
+        elif abs(new_shares) > abs(prior):
+            # adding to a position: weighted-average the basis
+            basis = (existing.avg_price * prior + price * shares) / new_shares
+            self.positions[symbol] = Position(symbol, new_shares, basis)
+        else:
+            # reducing: the basis of what remains is unchanged
+            self.positions[symbol] = Position(symbol, new_shares, existing.avg_price)
+
+    def apply_orders(
+        self, orders: pd.DataFrame, prices: pd.Series, as_of: pd.Timestamp, *, cost_bps=None
+    ) -> None:
+        """Deprecated: fills orders immediately at the supplied prices.
+
+        Kept so existing callers and tests keep working, but it models something
+        the backtest does not - execution at the price the decision was made on.
+        Use :meth:`schedule_orders` then :meth:`fill_pending`.
+        """
+        import warnings as _warnings
+
+        _warnings.warn(
+            "apply_orders fills at the price supplied rather than at the next "
+            "execution opportunity; use schedule_orders() + fill_pending() to "
+            "match the backtest's timing",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if orders is None or orders.empty:
+            return
+        model = self.execution_model()
+        for _, row in orders.iterrows():
+            sym = row["symbol"]
+            reference = float(prices.get(sym, row.get("estimated_price", np.nan)))
+            if not np.isfinite(reference) or reference <= 0:
+                continue
+            shares = float(row["shares"]) * (1 if row["side"] == "BUY" else -1)
+            fill_px = float(model.costs.fill_price(reference, np.sign(shares)))
+            notional = abs(shares) * reference
+            components = model.costs.split(notional)
+            self.cash -= shares * fill_px
+            self._book(sym, shares, fill_px)
+            self.orders.append({
+                "at": pd.Timestamp(as_of).isoformat(), "symbol": sym,
+                "side": row["side"], "shares": abs(shares), "price": fill_px,
+                "reference_price": reference, "notional": notional,
+                "cost": sum(components.values()), **components,
+            })
+
+    def accrue_financing(self, panel: Panel) -> float:
+        """Charge financing on borrowed capital and borrow on shorts.
+
+        The backtest charges this every bar. Paper must too, or the two drift:
+        paying an adverse fill price on a fully-invested book leaves cash
+        slightly negative, which is borrowed money, and ignoring it made the
+        paper account quietly cheaper than its own backtest.
+
+        Accrues one bar's cost per elapsed bar, so an account marked weekly is
+        charged for the whole week rather than for a single day.
+        """
+        as_of = panel.index[-1]
+        model = self.execution_model()
+        prices = panel.close.iloc[-1]
+        exposure = sum(
+            pos.shares * float(prices.get(sym, pos.avg_price))
+            for sym, pos in self.positions.items()
+        )
+        gross = sum(
+            abs(pos.shares * float(prices.get(sym, pos.avg_price)))
+            for sym, pos in self.positions.items()
+        )
+        short_notional = sum(
+            abs(pos.shares * float(prices.get(sym, pos.avg_price)))
+            for sym, pos in self.positions.items() if pos.shares < 0
+        )
+        equity = self.cash + exposure
+
+        bars = 1
+        if self.last_financed_bar is not None:
+            previous = pd.Timestamp(self.last_financed_bar)
+            if as_of <= previous:
+                return 0.0
+            position = panel.index.searchsorted(previous)
+            bars = max(int(len(panel.index) - 1 - position), 1)
+
+        charge = bars * model.costs.financing_per_bar(
+            gross, equity, short_notional, self.periods_per_year
+        )
+        self.cash -= charge
+        self.last_financed_bar = as_of.isoformat()
+        return charge
+
     def mark(self, panel: Panel) -> dict:
-        """Record today's equity. Idempotent per date."""
+        """Record today's equity, after accruing financing. Idempotent per date."""
+        self.accrue_financing(panel)
         as_of = panel.index[-1]
         prices = panel.close.iloc[-1]
         row = {
@@ -212,7 +403,7 @@ def divergence_report(
     account: PaperAccount,
     panel: Panel,
     *,
-    periods_per_year: float = 252.0,
+    periods_per_year: Optional[float] = None,
 ) -> Dict[str, float]:
     """Compare the live account against the same strategy backtested over the
     same dates.
@@ -230,8 +421,16 @@ def divergence_report(
     """
     from .cross_section import SingleFeatureRanker as _Ranker
     from .engine import BacktestEngine, ExecutionConfig
+    from .execution import cost_scenario
     from .metrics import summarize
     from .risk import RiskConfig
+
+    # The calendar must come from the account being judged. A default that
+    # disagrees with it charges financing at a different rate in the comparison
+    # backtest than the account itself paid, and the gap shows up as tracking
+    # error that is really the framework arguing with itself.
+    if periods_per_year is None:
+        periods_per_year = account.periods_per_year
 
     live = account.equity_series()
     if len(live) < 3:
@@ -247,7 +446,8 @@ def divergence_report(
     frames = {k: v.loc[start:end] for k, v in panel.to_frames().items()}
     engine = BacktestEngine(
         ExecutionConfig(initial_capital=float(live.iloc[0]), periods_per_year=periods_per_year,
-                        fee_bps=5.0, slippage_bps=3.0, max_leverage=1.0, min_trade_frac=0.10),
+                        costs=cost_scenario(account.cost_scenario), max_leverage=1.0,
+                        min_trade_frac=0.10),
         RiskConfig(target_vol=0.0, atr_stop_mult=0.0, max_drawdown_stop=0.0,
                    reentry_lockout_bars=0),
     )
@@ -378,20 +578,33 @@ def main(argv: Optional[List[str]] = None) -> int:
     panel = _load_universe_panel(account)
 
     if args.command == "rebalance":
+        # first: anything decided on a previous run fills against today's bar
+        filled = account.fill_pending(panel) if account.pending else pd.DataFrame()
+        if not filled.empty:
+            print(f"filled {len(filled)} order(s) queued earlier, at "
+                  f"{panel.index[-1].date()} {account.fill_at.replace('next_', '')}:\n")
+            print(filled[["symbol", "side", "shares", "price", "notional", "cost"]]
+                  .to_string(index=False, float_format=lambda v: f"{v:,.4f}"))
+            print()
+
         orders = account.plan_orders(panel)
         if orders.empty:
-            print("no orders - the book already matches the target basket")
+            print("no new orders - the book already matches the target basket")
         else:
-            print(f"orders as of {panel.index[-1].date()} (fill at the next open):\n")
+            print(f"orders decided on {panel.index[-1].date()}'s close, to fill at the "
+                  f"NEXT bar's {account.fill_at.replace('next_', '')}:\n")
             print(orders.to_string(index=False, float_format=lambda v: f"{v:,.4f}"))
-            print(f"\n  total traded: ${orders['notional'].sum():,.2f}")
+            print(f"\n  estimated notional: ${orders['estimated_notional'].sum():,.2f}")
+            print("  (estimated at the last close; the fill re-sizes against the "
+                  "price that actually prints)")
         if args.dry_run:
             print("\n(dry run - nothing recorded)")
             return 0
-        account.apply_orders(orders, panel.close.iloc[-1], panel.index[-1])
+        n = account.schedule_orders(orders, panel.index[-1])
         account.mark(panel)
         account.save(args.state)
-        print(f"\nrecorded. equity ${account.equity(panel.close.iloc[-1]):,.2f}")
+        print(f"\n{n} order(s) queued. Run 'rebalance' again on the next bar to fill them.")
+        print(f"equity ${account.equity(panel.close.iloc[-1]):,.2f}")
         return 0
 
     if args.command == "mark":
