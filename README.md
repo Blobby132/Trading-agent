@@ -373,6 +373,63 @@ of independent bets, and that is the only lever here with no statistical catch.
 
 ---
 
+## Look-ahead audit
+
+Look-ahead is the failure that makes a backtest worthless while looking excellent, so it gets its
+own test file and its own audit rather than a line of reassurance.
+
+### How it is tested
+
+`tests/test_no_lookahead.py` does not shorten the series to hide the future. It keeps the series
+exactly as long and **replaces every bar after a cut date with garbage** — a different price level,
+a different volatility, the opposite drift — then asserts that every value before the cut is
+**bit-identical** (`rtol=0, atol=0`).
+
+That is stricter than truncation, and deliberately so. Truncation catches code that indexes
+forward. Poisoning also catches code whose output depends on the *values* of future bars without
+depending on their count — a full-sample mean, a standardisation over the whole history, a quantile
+computed once and applied everywhere. Those pass a length-based test and fail this one.
+
+Every layer is covered: 12 indicators, all 6 single-asset strategies, the ensemble's adaptive blend
+weights, the risk-sizing layer, 11 cross-sectional features raw and standardised, all three rankers,
+portfolio construction, volatility targeting, the execution engine's equity path *and* its trade
+log, and both walk-forward loops end to end (folds completing before the cut must be untouched,
+including which model was selected).
+
+Three negative controls prove the audit can fail: a full-sample normalisation, a `shift(-1)` signal,
+and — specifically for the ridge target purge — a fit with the purge removed, which does move its
+coefficients when the future is poisoned. Without that last control the purge test would pass
+vacuously.
+
+### What the audit found
+
+| Finding | Status |
+|---|---|
+| **Tradeability peeked at the same bar's close.** The engine decided whether a name could be traded at bar `t`'s open by requiring bar `t`'s *close* to be finite — not knowable when the order goes in, and it let the backtest skip a name on its final day using information from the end of that day. | **Fixed.** Tradeability now depends on the open alone; marking falls back open → last print. |
+| **Universe membership used the whole sample.** `min_history(bars)` keeps names by their *total* bar count, including bars that had not happened yet. | **Documented, and an alternative added.** `require_history_before(date, bars)` is the point-in-time-correct filter. The engine already skips a name that has not listed, so the total-history filter buys tidiness, not correctness. |
+| Trailing stop trailed on the same bar's high it was then tested against. | Fixed earlier; regression test in `test_engine.py`. |
+| Ridge targets overlapping the test window. | Purged, with the negative control above. |
+| Everything else — indicators, strategies, blending, sizing, features, rankers, both walk-forwards. | Clean under poisoning. |
+
+### What the audit cannot fix
+
+**The ticker list is still survivorship-biased.** `US_LARGE_CAP` names companies that are liquid
+*today*; firms that were large in 2016 and then collapsed are absent. No amount of careful
+time-indexing repairs that — only point-in-time index membership data does, and no free source
+provides it. The list deliberately includes conspicuous laggards (INTC, BA, GE, PFE, T, VZ, CVS,
+PARA) rather than only winners, and a ranking model is far less exposed than a long-only one
+because the bias lifts every name roughly equally. It is still there, and it flatters the
+long-only numbers in particular.
+
+Running the audit:
+
+```bash
+pytest tests/test_no_lookahead.py -v     # 55 assertions, including the negative controls
+pytest -q                                # the full suite
+```
+
+---
+
 ## Layout
 
 ```
@@ -395,7 +452,7 @@ tradingagent/
 notebooks/
   Trading_Agent_Backtest.ipynb       part one: the single-asset agent
   Cross_Sectional_Stock_Agent.ipynb  part two: 124 stocks and the learner
-tests/              147 tests, mostly about causality and accounting
+tests/              209 tests; test_no_lookahead.py is the look-ahead audit
 ```
 
 ### Configuration

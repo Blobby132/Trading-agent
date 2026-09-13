@@ -98,3 +98,28 @@ def test_load_panel_tolerates_isolated_failures(monkeypatch):
     panel = uni.load_panel(["A", "BAD1", "B", "BAD2", "C", "D"], source="nasdaq", pause=0.0,
                            max_consecutive_failures=3, min_bars=100, verbose=False)
     assert set(panel.symbols) == {"A", "B", "C", "D"}
+
+
+def test_require_history_before_is_point_in_time():
+    """Membership must be decided on data available at the cutoff, not later."""
+    from tradingagent.data import synthetic_ohlcv
+
+    early = synthetic_ohlcv(600, seed=1, start="2018-01-01")
+    late = synthetic_ohlcv(600, seed=2, start="2019-06-01")   # lists 18 months later
+    panel = Panel.from_frames({"EARLY": early, "LATE": late})
+
+    # by the whole-sample filter both qualify, because both end up with 600 bars
+    assert set(panel.min_history(500).symbols) == {"EARLY", "LATE"}
+    # but at the start of 2019 only one of them had any history at all
+    pit = panel.require_history_before("2019-01-01", 200)
+    assert set(pit.symbols) == {"EARLY"}, "a name that had not listed yet was selected"
+
+
+def test_require_history_before_keeps_every_field_aligned():
+    from tradingagent.data import synthetic_ohlcv
+
+    panel = Panel.from_frames({f"S{i}": synthetic_ohlcv(400, seed=i) for i in range(5)})
+    kept = panel.require_history_before(panel.index[300], 100)
+    assert len(kept.symbols) == 5
+    for field in ("open", "high", "low", "close", "volume"):
+        assert list(getattr(kept, field).columns) == kept.symbols

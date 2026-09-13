@@ -201,3 +201,18 @@ def test_dust_filter_still_suppresses_tiny_adjustments(trending_prices):
     res = BacktestEngine(cfg, NO_RISK_LAYER).run(panel, weights)
     traded_after = res.trades.loc[res.trades.index > idx[201]] if not res.trades.empty else res.trades
     assert traded_after.empty, "a 1% nudge should have been ignored as dust"
+
+
+def test_tradeability_is_decided_on_the_open_alone():
+    """Whether this bar will print a close is not knowable when the order goes in."""
+    idx = pd.date_range("2021-01-01", periods=20, freq="1D", tz="UTC")
+    px = pd.Series(100.0, index=idx)
+    opens = px.copy()
+    closes = px.copy()
+    closes.iloc[10] = np.nan          # the close never printed, but the open did
+    df = pd.DataFrame({"open": opens, "high": px, "low": px, "close": closes, "volume": 1.0})
+    res = BacktestEngine(FRICTIONLESS, NO_RISK_LAYER).run({"x": df}, pd.DataFrame({"x": 1.0}, index=idx))
+    # the position is held through the incomplete bar and marked at the open
+    assert res.weights["x"].iloc[10] != 0.0
+    assert np.isfinite(res.equity).all()
+    assert not (res.trades["reason"] == "delisted").any()

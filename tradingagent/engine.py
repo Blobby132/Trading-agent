@@ -112,13 +112,16 @@ class BacktestEngine:
         closes = np.column_stack([panel[s]["close"].to_numpy() for s in symbols])
 
         # A symbol that has not listed yet - or has stopped trading - is NaN.
-        # Those bars are not tradeable, and a position held into one has to be
-        # liquidated at the last price that did print. Marking uses the
-        # forward-filled close purely so the arithmetic stays finite.
-        tradeable = (
-            np.isfinite(opens) & np.isfinite(closes) & (opens > 0) & (closes > 0)
-        )
-        mark = pd.DataFrame(closes).ffill().to_numpy()
+        # Tradeability is decided on the OPEN alone, because that is all you
+        # know when the order goes in: whether this bar will produce a closing
+        # print is not knowable at the open, and requiring it would let the
+        # backtest skip a name on its final day using information from the end
+        # of that day.
+        tradeable = np.isfinite(opens) & (opens > 0)
+        # Marking falls back to the open, then to the last price that printed,
+        # so the arithmetic stays finite through a half-formed bar.
+        mark_df = pd.DataFrame(closes).where(np.isfinite(closes) & (closes > 0), pd.DataFrame(opens))
+        mark = mark_df.ffill().to_numpy()
         mark = np.where(np.isfinite(mark), mark, 0.0)
         atrs = np.column_stack(
             [

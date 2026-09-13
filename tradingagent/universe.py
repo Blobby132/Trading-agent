@@ -122,8 +122,36 @@ class Panel:
         return ok
 
     def min_history(self, bars: int) -> "Panel":
-        """Drop symbols with fewer than ``bars`` observations."""
+        """Drop symbols with fewer than ``bars`` observations in the whole sample.
+
+        **This is a look-ahead filter.** It decides membership using the full
+        history, including bars that had not happened yet at the start of a
+        backtest, so a name that listed late and then ran for years is kept from
+        day one. It is convenient for assembling a universe and it is not
+        point-in-time correct.
+
+        Use :meth:`require_history_before` when the distinction matters. The
+        engine already handles a name that has not listed - its bars are NaN and
+        it simply is not traded - so filtering on total history buys tidiness,
+        not correctness.
+        """
         keep = [s for s in self.symbols if self.close[s].notna().sum() >= bars]
+        return Panel(*(getattr(self, f)[keep] for f in OHLCV_COLUMNS))
+
+    def require_history_before(self, date, bars: int) -> "Panel":
+        """Keep only symbols that already had ``bars`` observations by ``date``.
+
+        The point-in-time-correct version of :meth:`min_history`: membership is
+        decided using data available at ``date`` and nothing after it, so a
+        backtest starting there could have been run with exactly this universe.
+
+        It does not fix the *ticker list* itself - a hand-written list of names
+        that are liquid today is survivorship-biased however it is filtered, and
+        only point-in-time index membership data fixes that.
+        """
+        cutoff = pd.Timestamp(date, tz="UTC") if pd.Timestamp(date).tzinfo is None else pd.Timestamp(date)
+        history = self.close.loc[:cutoff].notna().sum()
+        keep = [s for s in self.symbols if history.get(s, 0) >= bars]
         return Panel(*(getattr(self, f)[keep] for f in OHLCV_COLUMNS))
 
     def to_frames(self) -> Dict[str, pd.DataFrame]:
