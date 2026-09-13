@@ -305,3 +305,272 @@ def format_summary(stats: Dict[str, float], title: str = "Backtest") -> str:
             f"({pct(stats['benchmark_total_return'])}, maxDD {pct(stats.get('benchmark_max_drawdown'))})"
         )
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# drawdown shape
+# --------------------------------------------------------------------------- #
+def drawdown_stats(equity: pd.Series, periods_per_year: float = 252.0) -> Dict[str, float]:
+    """How deep, how long, and how long to get back.
+
+    Depth is what gets quoted; **duration is what gets people to switch the
+    system off.** A 20% drawdown that recovers in a month is a different
+    experience from a 20% drawdown that lasts three years, and only one of them
+    survives contact with a human.
+    """
+    if len(equity) < 2:
+        return {"max_drawdown": float("nan")}
+    peak = equity.cummax()
+    dd = equity / peak - 1.0
+    underwater = dd < -1e-12
+
+    spells, current = [], 0
+    for flag in underwater:
+        if flag:
+            current += 1
+        elif current:
+            spells.append(current)
+            current = 0
+    if current:
+        spells.append(current)         # still underwater at the end
+
+    trough = int(np.argmin(dd.to_numpy()))
+    recovered = equity.iloc[trough:] >= peak.iloc[trough]
+    time_to_recover = (
+        float(np.argmax(recovered.to_numpy())) if recovered.any() else float("nan")
+    )
+    return {
+        "max_drawdown": float(dd.min()),
+        "max_drawdown_bars": float(max(spells)) if spells else 0.0,
+        "max_drawdown_years": float(max(spells) / periods_per_year) if spells else 0.0,
+        "avg_drawdown_bars": float(np.mean(spells)) if spells else 0.0,
+        "time_underwater": float(underwater.mean()),
+        "bars_to_recover_worst": time_to_recover,
+        "still_underwater": bool(underwater.iloc[-1]),
+    }
+
+
+def downside_volatility(returns: pd.Series, periods_per_year: float) -> float:
+    downside = returns[returns < 0]
+    if len(downside) < 2:
+        return 0.0
+    return float(downside.std(ddof=0) * np.sqrt(periods_per_year))
+
+
+# --------------------------------------------------------------------------- #
+# trade-level statistics
+# --------------------------------------------------------------------------- #
+def round_trips(trades: pd.DataFrame) -> pd.DataFrame:
+    """Reconstruct completed round trips from the fill log.
+
+    Bar-level win rate - which is what ``summarize`` reported - answers "how
+    often was today green", which is not the question a trader asks. This pairs
+    fills per symbol into positions opened and closed, so expectancy and the
+    win/loss distribution can be computed on the thing that actually has a
+    profit and loss.
+    """
+    if trades is None or trades.empty:
+        return pd.DataFrame(
+            columns=["symbol", "opened", "closed", "units", "entry", "exit", "pnl", "return", "bars"]
+        )
+
+    frame = trades.reset_index().rename(columns={"index": "timestamp"})
+    if "timestamp" not in frame.columns:
+        frame["timestamp"] = trades.index
+    rows = []
+    for symbol, group in frame.groupby("symbol", sort=False):
+        position = 0.0
+        basis = 0.0          # signed cost of the open position
+        opened_at = None
+        for _, fill in group.sort_values("timestamp").iterrows():
+            units, price = float(fill["units"]), float(fill["price"])
+            if position == 0.0:
+                position, basis, opened_at = units, units * price, fill["timestamp"]
+                continue
+            if np.sign(units) == np.sign(position):          # adding
+                position += units
+                basis += units * price
+                continue
+            # reducing or closing
+            closing = min(abs(units), abs(position)) * np.sign(position)
+            entry_price = basis / position if position else price
+            pnl = closing * (price - entry_price)
+            rows.append({
+                "symbol": symbol, "opened": opened_at, "closed": fill["timestamp"],
+                "units": abs(closing), "entry": entry_price, "exit": price, "pnl": float(pnl),
+                "return": float((price / entry_price - 1.0) * np.sign(position))
+                if entry_price else 0.0,
+            })
+            basis -= closing * entry_price
+            position -= closing
+            remainder = units + closing
+            if abs(position) < 1e-12 and abs(remainder) > 1e-12:   # flipped through zero
+                position, basis, opened_at = remainder, remainder * price, fill["timestamp"]
+            elif abs(position) < 1e-12:
+                position, basis, opened_at = 0.0, 0.0, None
+
+    result = pd.DataFrame(rows)
+    if not result.empty:
+        result["bars"] = (
+            pd.to_datetime(result["closed"]) - pd.to_datetime(result["opened"])
+        ).dt.days
+    return result
+
+
+def trade_level_stats(trades: pd.DataFrame) -> Dict[str, float]:
+    """Expectancy and the win/loss distribution, per completed round trip."""
+    trips = round_trips(trades)
+    if trips.empty:
+        return {"round_trips": 0.0}
+    wins = trips[trips["pnl"] > 0]["pnl"]
+    losses = trips[trips["pnl"] < 0]["pnl"]
+    win_rate = float(len(wins) / len(trips))
+    avg_win = float(wins.mean()) if len(wins) else 0.0
+    avg_loss = float(losses.mean()) if len(losses) else 0.0
+    return {
+        "round_trips": float(len(trips)),
+        "win_rate_trades": win_rate,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "largest_win": float(wins.max()) if len(wins) else 0.0,
+        "largest_loss": float(losses.min()) if len(losses) else 0.0,
+        # what one trade is worth on average, in currency
+        "expectancy": float(win_rate * avg_win + (1.0 - win_rate) * avg_loss),
+        "payoff_ratio": float(abs(avg_win / avg_loss)) if avg_loss else float("inf"),
+        "avg_holding_bars": float(trips["bars"].mean()) if "bars" in trips else float("nan"),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# uncertainty
+# --------------------------------------------------------------------------- #
+def bootstrap_stats(
+    returns: pd.Series,
+    *,
+    periods_per_year: float = 252.0,
+    n_boot: int = 2000,
+    block: int = 20,
+    seed: int = 0,
+    confidence: float = 0.90,
+) -> Dict[str, float]:
+    """Confidence intervals for the headline statistics.
+
+    A Sharpe ratio is an estimate, and over a few hundred bars it is a noisy
+    one. Quoting it without an interval invites the reader to treat a number
+    that could plausibly be 0.2 or 1.6 as though it were 0.9.
+
+    Resampling is done in blocks, which keeps volatility clustering and streaks
+    intact; an i.i.d. bootstrap would report intervals that are far too tight.
+    """
+    series = returns.dropna()
+    series = series[np.isfinite(series)]
+    if len(series) < block * 3:
+        return {"n_boot": 0.0}
+
+    values = series.to_numpy()
+    rng = np.random.default_rng(seed)
+    n_blocks = int(np.ceil(len(values) / block))
+    sharpes = np.empty(n_boot)
+    cagrs = np.empty(n_boot)
+    max_dds = np.empty(n_boot)
+
+    for i in range(n_boot):
+        starts = rng.integers(0, max(len(values) - block, 1), size=n_blocks)
+        path = np.concatenate([values[s : s + block] for s in starts])[: len(values)]
+        sd = path.std(ddof=0)
+        sharpes[i] = (path.mean() / sd * np.sqrt(periods_per_year)) if sd > 0 else 0.0
+        equity = np.cumprod(1.0 + path)
+        years = len(path) / periods_per_year
+        cagrs[i] = equity[-1] ** (1.0 / years) - 1.0 if equity[-1] > 0 and years > 0 else -1.0
+        peak = np.maximum.accumulate(equity)
+        max_dds[i] = (equity / peak - 1.0).min()
+
+    lo_q, hi_q = (1 - confidence) / 2 * 100, (1 + confidence) / 2 * 100
+    return {
+        "n_boot": float(n_boot),
+        "confidence": float(confidence),
+        "sharpe_lo": float(np.percentile(sharpes, lo_q)),
+        "sharpe_hi": float(np.percentile(sharpes, hi_q)),
+        "sharpe_p_positive": float((sharpes > 0).mean()),
+        "cagr_lo": float(np.percentile(cagrs, lo_q)),
+        "cagr_hi": float(np.percentile(cagrs, hi_q)),
+        "max_drawdown_p05": float(np.percentile(max_dds, 5)),
+        "max_drawdown_median": float(np.median(max_dds)),
+    }
+
+
+def full_report(result, benchmark: Optional[pd.Series] = None, *, bootstrap: bool = True) -> Dict[str, float]:
+    """Everything :func:`summarize` reports, plus shape, trades and uncertainty."""
+    stats = summarize(result, benchmark=benchmark)
+    ppy = result.exec_config.periods_per_year
+    stats.update(drawdown_stats(result.equity, ppy))
+    stats["downside_vol"] = downside_volatility(result.returns, ppy)
+    stats.update(trade_level_stats(result.trades))
+
+    costs = getattr(result, "costs", None)
+    if costs is not None and not costs.empty:
+        for column in costs.columns:
+            stats[f"cost_{column}"] = float(costs[column].sum())
+    gross = stats.get("total_return", float("nan"))
+    paid = stats.get("total_costs", 0.0) + stats.get("cost_financing", 0.0)
+    initial = max(stats.get("initial_equity", 1.0), 1e-9)
+    stats["net_return"] = gross
+    stats["gross_return"] = gross + paid / initial
+    weights = result.weights
+    stats["avg_position_size"] = (
+        float(weights.abs().replace(0.0, np.nan).stack().mean()) if not weights.empty else 0.0
+    )
+    if bootstrap:
+        stats.update(bootstrap_stats(result.returns, periods_per_year=ppy))
+    return stats
+
+
+def format_full_report(stats: Dict[str, float], title: str = "Backtest") -> str:
+    """The long form: performance, shape, trades, costs and uncertainty."""
+    def pct(key, nd=1):
+        value = stats.get(key)
+        return "n/a" if value is None or (isinstance(value, float) and np.isnan(value)) else f"{value * 100:,.{nd}f}%"
+
+    def num(key, nd=2):
+        value = stats.get(key)
+        return "n/a" if value is None or (isinstance(value, float) and np.isnan(value)) else f"{value:,.{nd}f}"
+
+    lines = [
+        format_summary(stats, title),
+        "",
+        "  -- drawdown shape ------------------------------------------------",
+        f"    longest drawdown  {num('max_drawdown_bars', 0)} bars "
+        f"({num('max_drawdown_years')} years)   average {num('avg_drawdown_bars', 0)} bars",
+        f"    time underwater   {pct('time_underwater')}"
+        + ("   (still underwater at the end)" if stats.get("still_underwater") else ""),
+        f"    downside vol      {pct('downside_vol')}",
+        "",
+        "  -- trades --------------------------------------------------------",
+        f"    round trips       {num('round_trips', 0)}   win rate {pct('win_rate_trades')}",
+        f"    average win       {num('avg_win')}      average loss {num('avg_loss')}",
+        f"    largest win       {num('largest_win')}      largest loss {num('largest_loss')}",
+        f"    expectancy        {num('expectancy')} per trade   payoff {num('payoff_ratio')}",
+        f"    avg holding       {num('avg_holding_bars', 0)} days   avg position {pct('avg_position_size')}",
+        "",
+        "  -- costs ---------------------------------------------------------",
+        f"    gross return      {pct('gross_return')}   net {pct('net_return')}",
+        f"    fees {num('cost_fees')}   financing {num('cost_financing')}   "
+        f"total {num('total_costs')}",
+    ]
+    if stats.get("n_boot"):
+        lines += [
+            "",
+            "  -- uncertainty (block bootstrap) ---------------------------------",
+            f"    Sharpe            {num('sharpe')}  "
+            f"[{num('sharpe_lo')}, {num('sharpe_hi')}] at {pct('confidence', 0)} confidence",
+            f"    P(Sharpe > 0)     {pct('sharpe_p_positive')}",
+            f"    CAGR              {pct('cagr')}  [{pct('cagr_lo')}, {pct('cagr_hi')}]",
+            f"    plausible maxDD   median {pct('max_drawdown_median')}, "
+            f"5th pct {pct('max_drawdown_p05')}",
+        ]
+        if stats.get("sharpe_lo", 0) <= 0:
+            lines.append(
+                "    NOTE: the interval includes zero - this sample does not "
+                "establish an edge."
+            )
+    return "\n".join(lines)
