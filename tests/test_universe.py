@@ -65,3 +65,36 @@ def test_large_cap_universe_is_big_enough_to_rank():
     # the whole cross-sectional premise needs breadth; guard against the list
     # being trimmed below the point where ranking means anything
     assert len(US_LARGE_CAP) >= 50
+
+
+def test_load_panel_gives_up_when_the_source_is_down(monkeypatch):
+    """A dead source must fail fast, not retry a hundred tickers."""
+    import tradingagent.universe as uni
+
+    attempts = []
+
+    def always_fails(symbol, **kwargs):
+        attempts.append(symbol)
+        raise RuntimeError("rate limited")
+
+    monkeypatch.setattr(uni, "load_prices", always_fails)
+    with pytest.raises(RuntimeError, match="failed on 3 symbols in a row"):
+        uni.load_panel([f"T{i}" for i in range(50)], source="nasdaq", pause=0.0,
+                       max_consecutive_failures=3, verbose=False)
+    assert len(attempts) == 3, "kept going after the source was clearly unavailable"
+
+
+def test_load_panel_tolerates_isolated_failures(monkeypatch):
+    """One bad ticker among good ones must not stop the run."""
+    import tradingagent.universe as uni
+    from tradingagent.data import synthetic_ohlcv
+
+    def sometimes_fails(symbol, **kwargs):
+        if symbol in {"BAD1", "BAD2"}:
+            raise RuntimeError("delisted")
+        return synthetic_ohlcv(400, seed=abs(hash(symbol)) % 1000)
+
+    monkeypatch.setattr(uni, "load_prices", sometimes_fails)
+    panel = uni.load_panel(["A", "BAD1", "B", "BAD2", "C", "D"], source="nasdaq", pause=0.0,
+                           max_consecutive_failures=3, min_bars=100, verbose=False)
+    assert set(panel.symbols) == {"A", "B", "C", "D"}

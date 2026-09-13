@@ -178,6 +178,7 @@ def load_panel(
     pause: float = 1.2,
     min_bars: int = 250,
     verbose: bool = True,
+    max_consecutive_failures: int = 5,
     **kwargs,
 ) -> Panel:
     """Download a universe into a :class:`Panel`.
@@ -186,10 +187,17 @@ def load_panel(
     the run - with a hundred names, one delisted ticker should not cost you the
     other ninety-nine. ``pause`` spaces the requests out, which matters because
     Yahoo rate-limits bursts.
+
+    But a *source* that is down is not the same as one bad ticker. After
+    ``max_consecutive_failures`` symbols in a row, this gives up and raises, so
+    a caller can fall back to another source immediately. Without that, a
+    rate-limited Yahoo turns a two-minute download into hours of retry backoff
+    that ends with an empty panel anyway.
     """
     names = UNIVERSES[symbols] if isinstance(symbols, str) else list(symbols)
     frames: Dict[str, pd.DataFrame] = {}
     failed: List[str] = []
+    consecutive_failures = 0
     session = None
     if source == "yahoo":
         import requests
@@ -204,10 +212,18 @@ def load_panel(
             frames[sym] = load_prices(
                 sym, interval=interval, start=start, end=end, source=source, **extra
             )
+            consecutive_failures = 0
         except Exception as exc:  # noqa: BLE001 - one bad ticker must not stop the run
             failed.append(sym)
+            consecutive_failures += 1
             if verbose:
                 print(f"[universe] skipping {sym}: {type(exc).__name__}: {str(exc)[:70]}")
+            if consecutive_failures >= max_consecutive_failures:
+                raise RuntimeError(
+                    f"{source!r} failed on {consecutive_failures} symbols in a row "
+                    f"(last: {sym}: {str(exc)[:80]}) - treating the source as unavailable "
+                    f"rather than retrying the remaining {len(names) - i - 1} names"
+                ) from exc
         if pause and i < len(names) - 1:
             time.sleep(pause)
 

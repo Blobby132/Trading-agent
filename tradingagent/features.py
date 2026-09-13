@@ -93,20 +93,35 @@ def _rsi(close: pd.DataFrame, n: int = 14) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # cross-sectional treatment
 # --------------------------------------------------------------------------- #
+def soft_clip(z: pd.DataFrame, limit: float) -> pd.DataFrame:
+    """Compress the tails beyond ``limit`` without collapsing them to one value.
+
+    A hard ``clip`` sets every extreme name to exactly the limit, so they tie -
+    and a ranking model then picks between tied names by column order rather
+    than by signal. In one run three of twelve holdings were tied at the clip.
+    This keeps the outlier's influence on the scale bounded while staying
+    strictly monotone, so the ordering survives: values inside the limit are
+    untouched, and everything beyond it is squashed into ``(limit, limit + 1)``.
+    """
+    magnitude = z.abs()
+    excess = (magnitude - limit).clip(lower=0.0)
+    return np.sign(z) * (magnitude.clip(upper=limit) + np.tanh(excess))
+
+
 def cross_sectional_z(
     frame: pd.DataFrame, *, clip: float = 3.0, min_names: int = 5
 ) -> pd.DataFrame:
     """Standardise each row across symbols, ignoring missing names.
 
-    Clipping first stops one blown-up name from setting the scale for the whole
-    row, which would shrink every other name's score toward zero.
+    Taming the tails first stops one blown-up name from setting the scale for
+    the whole row, which would shrink every other name's score toward zero.
     """
     valid = frame.notna().sum(axis=1)
     mean = frame.mean(axis=1)
     std = frame.std(axis=1, ddof=0).replace(0.0, np.nan)
     z = frame.sub(mean, axis=0).div(std, axis=0)
-    z = z.clip(-clip, clip)
-    # re-standardise after clipping so the row is still mean 0
+    z = soft_clip(z, clip)
+    # re-standardise afterwards so the row is still mean 0, unit scale
     z = z.sub(z.mean(axis=1), axis=0).div(z.std(axis=1, ddof=0).replace(0.0, np.nan), axis=0)
     return z.where(valid.ge(min_names), np.nan)
 

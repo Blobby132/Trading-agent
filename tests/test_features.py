@@ -101,3 +101,25 @@ def test_purge_with_a_horizon_longer_than_the_window_keeps_nothing():
     index = pd.MultiIndex.from_product([dates, ["a"]])
     keep = purge_overlapping(index, dates[5], horizon=50, dates=dates)
     assert not keep.any()
+
+
+def test_soft_clip_preserves_order_where_a_hard_clip_would_tie():
+    """Extreme names must stay rankable against each other."""
+    from tradingagent.features import soft_clip
+
+    z = pd.DataFrame([[1.0, 3.5, 4.0, 9.0, -5.0]])
+    out = soft_clip(z, 3.0)
+    row = out.iloc[0]
+    assert row[0] == pytest.approx(1.0)                 # inside the limit: untouched
+    assert row[1] < row[2] < row[3], "extremes collapsed into a tie"
+    assert row[3] < 4.0, "tail not compressed"
+    assert row[4] < 0 and abs(row[4]) < 4.0             # symmetric
+
+
+def test_cross_sectional_scores_have_no_ties_at_the_top():
+    rng = np.random.default_rng(11)
+    raw = pd.DataFrame(rng.normal(size=(30, 60)))
+    raw.iloc[:, :5] += 8.0                              # five runaway names per row
+    z = cross_sectional_z(raw, clip=3.0)
+    top = z.iloc[0].nlargest(5)
+    assert top.round(9).nunique() == 5, "the top of the ranking is tied"

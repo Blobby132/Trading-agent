@@ -299,10 +299,10 @@ per side:
 |---|---|---|---|---|
 | **fixed momentum, top decile, monthly** | no | **$695** | 1.11 | -32% |
 | fixed momentum, top quintile, monthly | no | $387 | 0.94 | -32% |
-| adaptive search, long/short | **yes** | $339 | 0.80 | -35% |
+| adaptive search, long/short | **yes** | $336 | 0.79 | -35% |
 | equal-weight universe (benchmark) | no | $253 | 0.79 | -36% |
 | fixed equal blend, long-only | no | $239 | 0.71 | -31% |
-| **adaptive search, long-only** | **yes** | **$207** | 0.53 | -32% |
+| **adaptive search, long-only** | **yes** | **$205** | 0.53 | -32% |
 | fixed momentum, long/short | no | $88 | -0.09 | -35% |
 | fixed equal blend, long/short | no | $63 | -0.49 | -46% |
 
@@ -310,7 +310,7 @@ And it is not a lucky cell. Sweeping the whole neighbourhood — four momentum d
 concentration levels × three rebalance frequencies, 36 fixed variants:
 
 - median final equity **$315**, range $211 – $719
-- **100%** of them beat the adaptive long-only agent ($207)
+- **100%** of them beat the adaptive long-only agent ($205)
 - **81%** beat the equal-weight benchmark ($253)
 
 ### Why the learner lost
@@ -325,11 +325,11 @@ sank the deflated Sharpe in part one:
 2. **Momentum is a strong prior; three years of data is a weak one.** The fixed rule encodes three
    decades of published evidence. The ridge model re-derives it badly from each window, and
    sometimes derives something else — the per-fold coefficient heatmap in the notebook shows the
-   learned weights moving around (mean consecutive correlation 0.46 long-only, 0.60 long/short).
+   learned weights moving around (mean consecutive correlation 0.49 long-only, 0.63 long/short).
 3. **Adaptation costs turnover.** Each time the chosen model changes, the book turns over. The
    fixed rule's positions persist.
 
-The one place selection clearly earned its keep: in the **long/short** arm it returned $339 against
+The one place selection clearly earned its keep: in the **long/short** arm it returned $336 against
 $88 and $63 for the naive fixed long/short rules. There the configurations it was choosing between
 were genuinely bad, and picking among them mattered.
 
