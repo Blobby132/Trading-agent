@@ -28,6 +28,8 @@ import pandas as pd
 
 from .agent import AgentConfig, PortfolioAgent, TradingAgent
 from .engine import BacktestEngine, BacktestResult, ExecutionConfig
+from .holdout import Holdout
+from .ledger import ResearchLedger
 from .metrics import summarize
 from .risk import RiskConfig
 from .strategies import DEFAULT_ENSEMBLE
@@ -292,8 +294,17 @@ def walk_forward(
     base_exec: ExecutionConfig | None = None,
     wf: WalkForwardConfig | None = None,
     space: Dict[str, Sequence] | None = None,
+    *,
+    holdout: Optional["Holdout"] = None,
+    ledger: Optional["ResearchLedger"] = None,
+    label: str = "walk_forward",
 ) -> WalkForwardResult:
     """Fit, step forward, trade, repeat - and report only the traded part.
+
+    Pass ``holdout`` to make the reserved era unreachable: the search raises
+    rather than quietly optimising over data that is supposed to be unseen.
+    Pass ``ledger`` to record the run, including how many candidates were
+    evaluated, so repeated searching stays visible.
 
     ``data`` is either one OHLCV frame or a dict of them (a portfolio sharing
     one account, which must already be index-aligned - see
@@ -302,6 +313,9 @@ def walk_forward(
     base_exec = base_exec or ExecutionConfig()
     wf = wf or WalkForwardConfig()
     space = space or DEFAULT_SEARCH_SPACE
+    if holdout is not None:
+        holdout.guard(data if not isinstance(data, dict) else next(iter(data.values())),
+                      what="walk_forward")
     objective = OBJECTIVES[wf.objective]
 
     candidates = sample_unique(wf.n_candidates, space, seed=wf.seed)
@@ -412,7 +426,7 @@ def walk_forward(
     if isinstance(weights, pd.Series):
         weights = weights.to_frame("asset")
 
-    return WalkForwardResult(
+    result = WalkForwardResult(
         equity=equity.rename("equity"),
         returns=equity.pct_change().fillna(0.0).replace([np.inf, -np.inf], 0.0),
         folds=pd.DataFrame(fold_rows),
@@ -427,6 +441,21 @@ def walk_forward(
             "n_candidates": len(candidates),
         },
     )
+    if ledger is not None:
+        # a walk-forward *selects* a configuration on every fold, so it counts
+        # as selection: its candidate count belongs in the multiple-testing total
+        ledger.record(
+            label, result.stats(),
+            universe=",".join(data) if isinstance(data, dict) else "single_asset",
+            n_symbols=len(data) if isinstance(data, dict) else 1,
+            dataset_start=index[0], dataset_end=index[-1],
+            candidate_count=evaluations, parameters=dict(chosen_per_fold[-1][0]) if chosen_per_fold else {},
+            seed=wf.seed, holdout_status="holdout" if holdout is None else "development",
+            objective=wf.objective, cost_scenario=base_exec.cost_model().name,
+            used_for_selection=True,
+            notes=f"{len(fold_rows)} folds, top_k={wf.top_k}",
+        )
+    return result
 
 
 # --------------------------------------------------------------------------- #

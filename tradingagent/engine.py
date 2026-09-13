@@ -501,9 +501,25 @@ class BacktestEngine:
         return frame.reindex(index).fillna(0.0).astype(float)
 
 
-def buy_and_hold_equity(df: pd.DataFrame, initial_capital: float = 100.0, fee_bps: float = 10.0) -> pd.Series:
-    """Benchmark curve: buy at the first open, hold, pay one entry fee."""
+def buy_and_hold_equity(
+    df: pd.DataFrame,
+    initial_capital: float = 100.0,
+    fee_bps: Optional[float] = None,
+    *,
+    costs: Optional[CostModel] = None,
+) -> pd.Series:
+    """Benchmark curve: buy at the first open, hold, pay one entry cost.
+
+    Charged the same way a strategy is charged - one crossing of the full cost
+    model on entry. ``fee_bps`` is kept for backwards compatibility; when both
+    are omitted the BASE scenario applies.
+    """
+    model = costs or (
+        CostModel(fee_bps=fee_bps, half_spread_bps=0.0, slippage_bps=0.0)
+        if fee_bps is not None
+        else BASE_COST
+    )
     px = df["close"]
-    entry = float(df["open"].iloc[0])
-    units = initial_capital * (1.0 - fee_bps / 1e4) / entry
+    entry = float(model.fill_price(df["open"].iloc[0], +1))
+    units = initial_capital / entry
     return (units * px).rename("buy_and_hold")

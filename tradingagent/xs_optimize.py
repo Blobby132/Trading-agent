@@ -33,7 +33,10 @@ from .cross_section import (
     volatility_target,
 )
 from .engine import BacktestEngine, BacktestResult, ExecutionConfig
+from .execution import BASE_COST, CostModel
 from .features import DEFAULT_FEATURES, feature_panel, forward_return
+from .holdout import Holdout
+from .ledger import ResearchLedger
 from .metrics import summarize
 from .optimize import OBJECTIVES, sample_unique
 from .risk import RiskConfig
@@ -158,8 +161,15 @@ def walk_forward_xs(
     *,
     features: Sequence[str] | None = None,
     risk: RiskConfig | None = None,
+    holdout: Optional["Holdout"] = None,
+    ledger: Optional["ResearchLedger"] = None,
+    label: str = "walk_forward_xs",
 ) -> XSWalkForwardResult:
-    """Fit, select, trade, step forward - and report only the traded windows."""
+    """Fit, select, trade, step forward - and report only the traded windows.
+
+    Pass ``holdout`` to make the reserved era unreachable, and ``ledger`` to
+    record the search so repeated experimentation stays auditable.
+    """
     base_exec = base_exec or ExecutionConfig(periods_per_year=252.0)
     wf = wf or XSWalkForwardConfig()
     space = space or XS_SEARCH_SPACE
@@ -168,6 +178,8 @@ def walk_forward_xs(
     )
     objective = OBJECTIVES[wf.objective]
     feature_names = list(features or DEFAULT_FEATURES)
+    if holdout is not None:
+        holdout.guard(panel, what="walk_forward_xs")
 
     feats = feature_panel(panel, feature_names, periods_per_year=base_exec.periods_per_year)
     dates = panel.index
@@ -315,7 +327,7 @@ def walk_forward_xs(
     weights = pd.concat(weight_pieces)
     weights = weights[~weights.index.duplicated(keep="last")].sort_index()
 
-    return XSWalkForwardResult(
+    result = XSWalkForwardResult(
         equity=equity.rename("equity"),
         returns=equity.pct_change().fillna(0.0).replace([np.inf, -np.inf], 0.0),
         weights=weights,
@@ -330,6 +342,17 @@ def walk_forward_xs(
         meta={"n_candidates": len(candidates), "features": feature_names,
               "symbols": panel.symbols},
     )
+    if ledger is not None:
+        ledger.record(
+            label, result.stats(), universe=f"{len(panel.symbols)}_names",
+            n_symbols=len(panel.symbols), dataset_start=dates[0], dataset_end=dates[-1],
+            candidate_count=evaluations,
+            parameters=dict(chosen_per_fold[-1][0]) if chosen_per_fold else {},
+            seed=wf.seed, holdout_status="holdout" if holdout is None else "development",
+            objective=wf.objective, cost_scenario=base_exec.cost_model().name,
+            used_for_selection=True, notes=f"{len(fold_rows)} folds, top_k={wf.top_k}",
+        )
+    return result
 
 
 def _unit_norm(coefficients: Dict[str, float]) -> Dict[str, float]:
@@ -349,13 +372,23 @@ def _run(frames, weights, window: slice, exec_cfg, risk, capital, *, record: boo
 
 
 def equal_weight_benchmark(
-    panel: Panel, initial_capital: float = 100.0, *, rebalance_every: int = 21
+    panel: Panel,
+    initial_capital: float = 100.0,
+    *,
+    rebalance_every: int = 21,
+    costs: Optional["CostModel"] = None,
+    periods_per_year: float = 252.0,
 ) -> pd.Series:
     """Buy the whole universe in equal weights - the benchmark that matters.
 
     Beating one stock is luck. Beating an equal-weight basket of the same names
     you were choosing from is the only comparison that says the *ranking* added
     anything.
+
+    The benchmark is charged **the same costs as the strategy**. It previously
+    paid 1 bp of fee and 1 bp of slippage while strategies paid 15, which made
+    it an easier target for no stated reason. Pass ``costs`` to match whatever
+    scenario the strategy is being run under.
     """
     tradeable = panel.tradeable()
     weights = tradeable.astype(float)
@@ -365,8 +398,8 @@ def equal_weight_benchmark(
         keep[::rebalance_every] = True
         weights = weights.where(pd.Series(keep, index=weights.index), np.nan).ffill().fillna(0.0)
     cfg = ExecutionConfig(
-        initial_capital=initial_capital, fee_bps=1.0, slippage_bps=1.0,
-        min_trade_frac=0.0, max_leverage=1.0, periods_per_year=252.0,
+        initial_capital=initial_capital, costs=costs or BASE_COST,
+        min_trade_frac=0.0, max_leverage=1.0, periods_per_year=periods_per_year,
     )
     risk = RiskConfig(target_vol=0.0, atr_stop_mult=0.0, max_drawdown_stop=0.0)
     return BacktestEngine(cfg, risk).run(panel.to_frames(), weights).equity.rename("equal_weight")

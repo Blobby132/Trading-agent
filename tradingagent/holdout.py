@@ -32,6 +32,10 @@ import pandas as pd
 
 from .universe import Panel
 
+class HoldoutViolation(RuntimeError):
+    """Raised when reserved data reaches code that must not see it."""
+
+
 DEFAULT_LEDGER = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results", "holdout_ledger.json"
 )
@@ -71,6 +75,39 @@ class Holdout:
     def covers(self, data: Data) -> bool:
         index = data.index if isinstance(data, (pd.DataFrame, Panel)) else data
         return bool(len(index)) and index[-1] >= self.start
+
+    # -- protection ------------------------------------------------------ #
+    def guard(self, data: Data, *, what: str = "this operation") -> Data:
+        """Refuse to hand reserved bars to something that should not see them.
+
+        Wrap the data going into an optimiser in this. If the data reaches into
+        the reserved era the call fails loudly instead of quietly training on
+        it - which is the failure mode that cannot be detected afterwards,
+        because nothing about a leaked holdout looks wrong in the output.
+
+        Returns the development split, so the honest call is also the easy one::
+
+            wf = walk_forward(holdout.guard(panel), ...)
+        """
+        if not self.covers(data):
+            return data
+        index = data.index
+        overlap = int((index >= self.start).sum())
+        raise HoldoutViolation(
+            f"{what} was handed {overlap:,} bars from the reserved era "
+            f"(from {self.start.date()}). The holdout exists so that exactly this "
+            f"cannot happen by accident.\n"
+            f"  - to train on development data only:  holdout.development(data)\n"
+            f"  - to spend the holdout deliberately:  holdout.evaluate(...)"
+        )
+
+    def protect(self, data: Data) -> Data:
+        """``guard`` without the exception: silently returns the development split.
+
+        Use when a caller legitimately has the full history and simply must not
+        optimise over the end of it.
+        """
+        return self.development(data) if self.covers(data) else data
 
     # -- the ledger ----------------------------------------------------- #
     def _read_ledger(self) -> List[dict]:
