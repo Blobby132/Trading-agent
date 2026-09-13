@@ -9,6 +9,10 @@ $100 stake: *can it reach $1,000, how long does it take, and what does it have t
 factors to weight — and a measurement of whether that learning is worth anything. (Short version: on
 this data it lost to a fixed rule that never learns. [Jump to it](#part-two-the-cross-sectional-agent-100-stocks-and-a-learner).)
 
+**Part three** tests the four things that would make it real — more breadth, learning risk instead
+of signal, survivorship bias, and a held-out era — plus a paper-trading harness to run it forward.
+Three of the four came back against my predictions. [Jump to it](#part-three-making-it-real).
+
 The hard part of this problem is not writing a strategy. It is writing a backtest that does not
 lie to you. Two things make a backtest lie, and both are addressed structurally here rather than
 by good intentions:
@@ -37,6 +41,7 @@ everything else runs top to bottom with no API keys and no account:
 
 - `notebooks/Trading_Agent_Backtest.ipynb` — part one, the single-asset agent (Coinbase data)
 - `notebooks/Cross_Sectional_Stock_Agent.ipynb` — part two, 124 stocks and the learner (Yahoo data)
+- `notebooks/Making_It_Real.ipynb` — part three, breadth / risk learning / survivorship / holdout / paper trading
 
 ```
 https://colab.research.google.com/github/Blobby132/Trading-agent/blob/claude/trading-agent-backtest-sih2te/notebooks/Trading_Agent_Backtest.ipynb
@@ -60,6 +65,11 @@ python -m tradingagent.cli --symbols BTC-USD ETH-USD LINK-USD --candidates 200
 
 # rank 124 US large caps against each other, learning the factor weights as it goes
 python -m tradingagent.cli --mode cross-section --universe us_large_cap --capital 100
+
+# paper-trade it forward - the only holdout nobody has spent
+python -m tradingagent.paper init --capital 100 --universe us_large_cap
+python -m tradingagent.paper rebalance
+python -m tradingagent.paper report
 
 # no network? the synthetic simulator exercises the whole pipeline offline
 python -m tradingagent.cli --source synthetic --symbols SYN --mode single
@@ -378,6 +388,144 @@ of independent bets, and that is the only lever here with no statistical catch.
 
 ---
 
+## Part three: making it real
+
+Parts one and two produced a strategy and a warning. Part three does the four things that decide
+whether any of it survives contact with reality — and three of the four came back **against** what
+I predicted.
+
+| Question | Prediction | Result |
+|---|---|---|
+| Does more breadth help? | yes — the one lever with no statistical catch | **no** — 381 names did worse than 124 |
+| Does learning *risk* help where learning *signal* failed? | yes | **mostly no** — only the drawdown guard earned its place |
+| How much is survivorship bias worth? | it inflates the strategy | **it inflates the benchmark twice as much** |
+| Does the rule hold on a reserved era? | probably | **yes — the strongest result in the repo** |
+
+`notebooks/Making_It_Real.ipynb` runs all of it.
+
+### Breadth did not help
+
+Same fixed momentum rule, two universes, same out-of-sample window:
+
+| Universe | Final | Sharpe | Max drawdown | Equal-weight benchmark |
+|---|---|---|---|---|
+| 124 names | **$682** | 1.10 | -33% | $253 |
+| 381 names | $426 | 0.92 | -37% | $240 |
+
+My argument was that information ratio scales with the square root of the number of independent
+bets. That argument has a hidden assumption — **equal skill per bet** — and the names I added did
+not carry the same signal. More bets at a lower hit rate is not an improvement. Breadth is worth
+having when the *marginal* name is as good as the average one; test that rather than assuming it.
+
+### Learning risk did not help either, with one exception
+
+Signal held fixed; only the sizing learned. Each layer switchable, so they can be attributed
+rather than shipped as a bundle:
+
+| Layer | Final | Sharpe | Max drawdown | Calmar | Volatility |
+|---|---|---|---|---|---|
+| no risk learning (baseline) | **$426** | 0.92 | -37.2% | 0.63 | 26.6% |
+| inverse-vol allocation | $345 | 0.86 | -35.9% | 0.55 | 24.3% |
+| correlation scaling only | $355 | 0.86 | -35.4% | 0.57 | 24.9% |
+| **drawdown guard only** | $309 | 0.84 | **-26.6%** | **0.67** | 22.5% |
+| vol target 25% only | $312 | 0.82 | -32.3% | 0.56 | 23.5% |
+| everything on | $238 | 0.73 | -24.0% | 0.56 | 20.0% |
+
+Only the drawdown guard improved return per unit of drawdown (Calmar 0.67 vs 0.63), cutting the
+worst drawdown from -37% to -27%. Everything else cut return roughly in proportion to the risk it
+removed.
+
+The reason is period-specific and worth naming: **risk layers de-risk into volatility, and in
+2019–2026 every volatility spike was followed by a sharp recovery.** In a market that keeps
+V-recovering, cutting into drawdowns is a tax. In 2008 it would have been insurance. One sample
+cannot tell you which regime you are in, and that uncertainty is the argument for keeping the
+drawdown guard despite its cost.
+
+> One finding in this table was originally my own arithmetic. The correlation scale had the
+> diversification ratio inverted and collapsed a 27%-volatility book to 3%, which looked like a
+> dramatic result about risk management. It is fixed, with two tests pinning it — a normal book
+> must not be rescaled, and the scale must still react when correlation genuinely spikes.
+
+### Survivorship bias runs the other way
+
+`survivorship.py` converts "there is some bias" into a number. Where the dead names are available
+it measures the gap directly; where they are not (Nasdaq's quote API serves none of them) it
+injects synthetic failures — names faded to near-zero and then delisted, concentrated where real
+failures concentrate — and damages the benchmark identically so the relative column isolates what
+failures cost the strategy specifically.
+
+| Annual failure rate | Strategy | Benchmark | Strategy drag | Benchmark drag | Relative |
+|---|---|---|---|---|---|
+| 0% | $426 | $237 | — | — | — |
+| 1% | $368 | $173 | -13.7% | -27.3% | **+9.9%** |
+| 2% | $320 | $127 | -25.0% | -46.4% | **+20.9%** |
+| 4% | $205 | $54 | -52.0% | -77.0% | **+29.8%** |
+
+**Hidden failures cost the benchmark roughly twice what they cost the strategy**, because failing
+companies are almost never sitting in the top momentum decile. So survivorship bias flatters the
+*benchmark* more than the strategy, and the measured outperformance is if anything understated —
+the opposite of the usual worry. Realistic large-cap failure rates are around 1%/yr, so that row is
+the one to read.
+
+### A held-out era, and a ledger that counts your looks
+
+`holdout.py` hides a reserved era from the development split, and records every evaluation against
+it in a file. A second look is not forbidden; it is counted, and the verdict changes. An era
+checked eleven times is not held out, and the ledger stops that fact from quietly disappearing.
+
+Fixed 12-1 momentum, top decile, monthly, on 2024-01 → 2026-09 — an era never used to tune it:
+
+| | Reserved era |
+|---|---|
+| Final equity from $100 | **$279** |
+| Sharpe | **1.49** |
+| Max drawdown | -22.6% |
+| Equal-weight benchmark | $146 |
+
+The strongest result in this repo, from the simplest rule in it. **With one honest caveat:** I ran
+experiments across 2024–2026 throughout this project, so it is not a virgin holdout *for me*. What
+is true is that the momentum rule itself was never tuned — it is the textbook specification,
+unchanged since it was written.
+
+### Paper trading — the only holdout nobody has spent
+
+```bash
+python -m tradingagent.paper init --capital 100 --universe us_large_cap
+python -m tradingagent.paper rebalance     # monthly: prints orders, records fills at next open
+python -m tradingagent.paper report        # live vs backtest
+```
+
+State is one JSON file. Orders are sized on the last close and filled at the next open — the same
+convention the engine uses, so the two stay comparable.
+
+The report puts **tracking error** and **return correlation** above P&L on purpose. A paper account
+that makes money while behaving nothing like its backtest has told you the backtest is wrong, not
+that the strategy works — and that is the failure you most need to catch early, because it is the
+one that looks like success.
+
+### What the whole project adds up to
+
+Across three parts, the thing that kept winning was the simplest rule in the repo: **rank on
+12-month momentum, hold the top decile, rebalance monthly, never adapt.** Every layer of
+intelligence added on top — adaptive strategy selection, learned factor weights, learned risk
+sizing, more breadth — made it worse.
+
+The machinery built to test those ideas was not wasted. It is what let each of them be rejected on
+evidence rather than taste, and it is what found four correctness bugs and two reporting errors in
+my own work along the way.
+
+**What to do now, in order:**
+
+1. **Paper-trade the fixed rule for six months** and watch the tracking error. It is the only
+   remaining test that nothing in this repo can fool.
+2. **Get total-return, point-in-time data** before funding anything. Every result here rests on a
+   universe assembled by hindsight; that is the last big uncontrolled variable.
+3. **Resist adding features.** On this evidence the next one is more likely to cost than pay.
+   Change that only when a specific addition beats the fixed rule on an era you reserved *before*
+   you built it.
+
+---
+
 ## Look-ahead audit
 
 Look-ahead is the failure that makes a backtest worthless while looking excellent, so it gets its
@@ -454,11 +602,16 @@ tradingagent/
   metrics.py        statistics, time-to-target, bootstrap, deflated Sharpe
   report.py         tearsheet plots
   live.py           "what should I hold right now" - single name and basket
+  risk_learner.py   learning applied to sizing instead of to signal
+  survivorship.py   measures the bias, or bounds it by injecting failures
+  holdout.py        a reserved era, and a ledger counting every look at it
+  paper.py          paper trading + the live-vs-backtest divergence report
   cli.py            command-line entry point
 notebooks/
   Trading_Agent_Backtest.ipynb       part one: the single-asset agent
   Cross_Sectional_Stock_Agent.ipynb  part two: 124 stocks and the learner
-tests/              209 tests; test_no_lookahead.py is the look-ahead audit
+  Making_It_Real.ipynb               part three: breadth, risk, bias, holdout, paper
+tests/              252 tests; test_no_lookahead.py is the look-ahead audit
 ```
 
 ### Configuration

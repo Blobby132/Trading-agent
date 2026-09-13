@@ -129,3 +129,20 @@ def test_cli_refuses_to_act_without_an_account(tmp_path, capsys):
     code = main(["mark", "--state", str(tmp_path / "missing.json")])
     assert code == 1
     assert "run 'init'" in capsys.readouterr().err
+
+
+def test_tracking_error_is_annualised_by_actual_mark_frequency(panel, account):
+    """Marking weekly must not inflate tracking error by sqrt(5)."""
+    daily, weekly = PaperAccount(capital=100.0, cash=100.0, top_frac=0.2), account
+    for step, acct in ((1, daily), (5, weekly)):
+        for i in range(450, 600, step):
+            sub = panel.slice(slice(0, i))
+            if (i - 450) % 21 < step:
+                acct.apply_orders(acct.plan_orders(sub), sub.close.iloc[-1], sub.index[-1])
+            acct.mark(sub)
+    d = divergence_report(daily, panel)
+    w = divergence_report(weekly, panel)
+    assert d["marks_per_year"] > w["marks_per_year"] * 2, "mark frequency not detected"
+    # the two accounts follow the same strategy, so their tracking errors should
+    # be the same order of magnitude rather than differing by the sampling rate
+    assert w["tracking_error_annual"] < d["tracking_error_annual"] * 3

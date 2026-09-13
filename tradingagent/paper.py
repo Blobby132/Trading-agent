@@ -260,13 +260,19 @@ def divergence_report(
     live_ret = aligned["live"].pct_change().dropna()
     bt_ret = aligned["backtest"].pct_change().dropna()
     diff = live_ret - bt_ret
+
+    # Annualise by how often the account is actually marked, not by assuming
+    # daily. Marking weekly and scaling by sqrt(252) inflates tracking error by
+    # sqrt(5) and turns a well-behaved account into an alarming one.
+    spacing = np.median(np.diff(aligned.index.values).astype("timedelta64[D]").astype(float))
+    marks_per_year = periods_per_year / max(spacing * periods_per_year / 365.0, 1.0)
     stats = summarize(
         type("R", (), {
             "equity": aligned["live"], "returns": live_ret.reindex(aligned.index).fillna(0.0),
             "weights": pd.DataFrame(1.0, index=aligned.index, columns=["book"]),
             "trades": pd.DataFrame(), "costs": pd.DataFrame(index=aligned.index),
             "exec_config": ExecutionConfig(initial_capital=float(live.iloc[0]),
-                                           periods_per_year=periods_per_year),
+                                           periods_per_year=marks_per_year),
             "meta": {},
         })()
     )
@@ -277,7 +283,8 @@ def divergence_report(
         "backtest_equity": float(aligned["backtest"].iloc[-1]),
         "live_return": float(aligned["live"].iloc[-1] / aligned["live"].iloc[0] - 1.0),
         "backtest_return": float(aligned["backtest"].iloc[-1] / aligned["backtest"].iloc[0] - 1.0),
-        "tracking_error_annual": float(diff.std(ddof=0) * np.sqrt(periods_per_year)),
+        "tracking_error_annual": float(diff.std(ddof=0) * np.sqrt(marks_per_year)),
+        "marks_per_year": float(marks_per_year),
         "return_correlation": float(live_ret.corr(bt_ret)) if len(live_ret) > 2 else float("nan"),
         "live_sharpe": float(stats["sharpe"]),
         "live_max_drawdown": float(stats["max_drawdown"]),
@@ -306,7 +313,8 @@ def format_divergence(report: Dict[str, float]) -> str:
         f"  live for          {int(report['days_live'])} days ({int(report['bars'])} marks)",
         f"  live equity       ${report['live_equity']:,.2f}  ({report['live_return']:+.1%})",
         f"  backtest says     ${report['backtest_equity']:,.2f}  ({report['backtest_return']:+.1%})",
-        f"  tracking error    {report['tracking_error_annual']:.1%} annualised",
+        f"  tracking error    {report['tracking_error_annual']:.1%} annualised "
+        f"(from {report.get('marks_per_year', float('nan')):.0f} marks/yr)",
         f"  return corr       {report['return_correlation']:.2f}",
         f"  live sharpe       {report['live_sharpe']:.2f}   max drawdown {report['live_max_drawdown']:.1%}",
         f"  verdict           {verdict(report)}",

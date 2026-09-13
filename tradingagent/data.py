@@ -301,6 +301,8 @@ def load_nasdaq(
     *,
     session=None,
     timeout: int = 30,
+    retries: int = 3,
+    backoff: float = 2.0,
 ) -> pd.DataFrame:
     """Daily US equity bars from Nasdaq's public quote API.
 
@@ -330,17 +332,23 @@ def load_nasdaq(
     if interval != "1d":
         raise ValueError("the Nasdaq endpoint only serves daily bars")
 
-    end_ts = pd.Timestamp(end) if end is not None else pd.Timestamp.utcnow().tz_localize(None)
-    resp = sess.get(
-        f"https://api.nasdaq.com/api/quote/{symbol}/historical",
-        params={
-            "assetclass": "stocks",
-            "fromdate": pd.Timestamp(start).strftime("%Y-%m-%d"),
-            "todate": end_ts.strftime("%Y-%m-%d"),
-            "limit": 99999,
-        },
-        timeout=timeout,
-    )
+    end_ts = pd.Timestamp(end) if end is not None else pd.Timestamp.now(tz="UTC").tz_localize(None)
+    params = {
+        "assetclass": "stocks",
+        "fromdate": pd.Timestamp(start).strftime("%Y-%m-%d"),
+        "todate": end_ts.strftime("%Y-%m-%d"),
+        "limit": 99999,
+    }
+    url = f"https://api.nasdaq.com/api/quote/{symbol}/historical"
+    resp = None
+    for attempt in range(max(retries, 1)):
+        resp = sess.get(url, params=params, timeout=timeout)
+        if resp.status_code == 429 or resp.status_code >= 500:
+            time.sleep(backoff * (2**attempt))
+            continue
+        break
+    if resp is None:  # pragma: no cover - defensive
+        raise RuntimeError(f"no response from Nasdaq for {symbol}")
     resp.raise_for_status()
     table = (resp.json().get("data") or {}).get("tradesTable")
     if not table or not table.get("rows"):
