@@ -163,7 +163,14 @@ def summarize(result, benchmark: Optional[pd.Series] = None) -> Dict[str, float]
     out.update(time_to_target(eq, result.exec_config.target_equity, ppy))
 
     if benchmark is not None and len(benchmark) == len(eq):
+        # Rebase the benchmark to the same starting capital on the same date.
+        # Slicing a buy-and-hold curve that began years earlier and comparing
+        # its level to an account that starts here is not a comparison - it
+        # silently credits the benchmark with everything it made before the
+        # strategy was even trading.
         bench = benchmark.reindex(eq.index).ffill()
+        if len(bench) and bench.iloc[0] not in (0, np.nan) and np.isfinite(bench.iloc[0]):
+            bench = bench / bench.iloc[0] * eq.iloc[0]
         out["benchmark_final_equity"] = float(bench.iloc[-1])
         out["benchmark_total_return"] = total_return(bench)
         out["benchmark_max_drawdown"] = max_drawdown(bench)

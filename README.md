@@ -149,78 +149,87 @@ Three further checks ship with it, because a walk-forward can still flatter a se
 
 ## Results
 
-All figures below are **out of sample**: at every point on the curve, the parameters being traded
-were chosen only from earlier data. Reproduce with
+All figures are **out of sample**: at every point on the curve, the parameters being traded were
+chosen only from earlier data. Every number here was re-measured on the current code after the
+look-ahead audit below. Reproduce with
 `python -m tradingagent.cli --symbols BTC-USD --capital 100 --target 1000 --candidates 150`.
 
 ![Walk-forward tearsheet for BTC-USD](docs/walkforward_btc.png)
 
-The fold bars in that third panel are the honest summary of this whole project: **only 37% of the
-six-month test windows were positive**, and three of them carry the entire result.
+The fold bars in that third panel are the honest summary of this whole part: **only about a third
+of the six-month test windows were positive**, and three of them carry the entire result.
 
 ### Headline - BTC-USD daily, traded 2017-07-29 -> 2026-09-12, five random seeds
 
 | | Agent (median of 5 seeds) | Buy & hold |
 |---|---|---|
-| Final equity from $100 | **$1,221** (range $731 - $1,526) | $27,720 |
-| Reached $1,000 | **5 of 5 seeds**, between 2020-12-16 and 2021-01-06 | yes |
-| Sharpe | 0.89 | - |
-| Max drawdown | -54% | **-84%** |
-| Calmar | 0.59 | - |
-| Trades / costs paid | 582 / $156 | 1 / $0.10 |
+| Final equity from $100 | **$1,026** (range $706 - $1,390) | $2,857 |
+| Reached $1,000 | **5 of 5 seeds**, between 2021-01-02 and 2021-02-08 | yes |
+| Sharpe | 0.84 | - |
+| Max drawdown | -52% | **-84%** |
+| Calmar | 0.51 | - |
+| Trades / costs paid | 1,051 / $146 | 1 / $0.10 |
 
-Buy & hold made far more money and took a 84% drawdown to do it - on a $100 account that is the
+Buy & hold made more money and took an 84% drawdown to do it — on a $100 account that is the
 difference between a position you keep and one you capitulate out of. That trade-off, not the
-absolute return, is the claim this repo makes.
+absolute return, is the claim this part makes.
+
+> **A correction.** Earlier versions of this table reported buy & hold at $27,720. That was a
+> buy-and-hold curve *starting in 2015* compared against an account that starts trading in 2017 —
+> not the same window, and it silently credited the benchmark with everything it made before the
+> strategy existed. `metrics.summarize` now rebases any benchmark to the same start date and
+> starting capital, with a test pinning it. Every benchmark figure below is the rebased one.
 
 ### The caveat that matters more than the headline
 
 The same pipeline, run on histories that start in later years (three seeds each, 60 candidates per
-fold; buy & hold measured over the same traded window, so the columns are comparable):
+fold; buy & hold over the same traded window):
 
 | History starts | Agent (median of 3 seeds) | Reached $1,000 | Buy & hold |
 |---|---|---|---|
-| 2015-07 | **$1,466** | 3 / 3 | $2,766 |
-| 2017-01 | $680 | 2 / 3 | $2,125 |
-| 2018-01 | $271 | 0 / 3 | $940 |
-| 2019-01 | **$66** | 0 / 3 | $191 |
-| 2020-01 | $94 | 0 / 3 | $184 |
-| 2021-01 | $130 | 0 / 3 | $442 |
-| 2022-01 | $109 | 0 / 3 | $165 |
+| 2015-07 | **$1,181** | 2 / 3 | $2,766 |
+| 2017-01 | $532 | 0 / 3 | $2,125 |
+| 2018-01 | $375 | 0 / 3 | $940 |
+| 2019-01 | **$97** | 0 / 3 | $191 |
+| 2020-01 | $115 | 0 / 3 | $184 |
+| 2021-01 | $133 | 0 / 3 | $442 |
+| 2022-01 | $121 | 0 / 3 | $165 |
 
 **Essentially all of the growth came from two crypto bull markets.** No run whose trading begins
-after 2020 reaches the target, and the one starting January 2019 ends at $66 - a third of the stake
-gone - while BTC itself nearly doubled over the same window.
+after 2020 reaches the target, and the one starting January 2019 ends below its stake while BTC
+itself roughly doubled.
 
-Diagnosing that shortfall on the 2019-start window:
+Diagnosing that shortfall on the 2019-start window (traded 2021-01 → 2026-09):
 
 | | Final equity from $100 |
 |---|---|
-| Walk-forward, normal costs | $105 |
-| Walk-forward, **zero** fees and slippage | $115 |
-| Fixed default config, no search | $74 |
-| Long-only search | $101 |
+| Walk-forward, normal costs | $67 |
+| Walk-forward, **zero** fees and slippage | $71 |
+| Fixed default config, no search | $71 |
+| Long-only search | $86 |
 | Buy & hold | $191 |
 
-Costs explain about $10 of it, and the search is adding value rather than destroying it (it beats
-the fixed configuration). What changed is the signal: **trend following on daily BTC bars had a
-strong edge through 2021 and a much weaker one since.**
+Costs explain about $4 of it. And the search is now marginally *worse* than the fixed configuration
+($67 vs $71) — which is the same result part two finds at much larger scale: on this data the
+selection step costs more than it earns. What changed underneath is the signal itself: **trend
+following on daily BTC bars had a strong edge through 2021 and a much weaker one since.**
 
 ### Markets the method was never tuned on
 
 The pipeline was developed against BTC, so BTC results carry my own selection bias that no
-walk-forward can remove. Pointing the identical code at four other markets is the corrective:
+walk-forward removes. Pointing the identical code at four other markets is the corrective
+(benchmarks rebased to the traded window):
 
 | Market | Agent | Buy & hold | Sharpe |
 |---|---|---|---|
-| ETH-USD | $871 | $20,140 | 0.87 |
-| SOL-USD | $127 | $251 | 0.39 |
-| LINK-USD | $99 | $411 | 0.13 |
-| DOGE-USD | **$118** | **$17** | 0.33 |
+| ETH-USD | **$947** | $452 | 0.89 |
+| SOL-USD | $135 | $611 | 0.45 |
+| LINK-USD | $89 | $57 | 0.05 |
+| DOGE-USD | $142 | $137 | 0.54 |
 
-ETH reproduces the BTC pattern closely and nearly reaches the target. SOL and LINK are roughly
-flat. DOGE is the clearest single illustration of what this system is actually for: buy & hold lost
-83% of the stake, and the agent finished up 18%.
+ETH is the clearest win — roughly double buy & hold over the same window, at Sharpe 0.89. LINK beats
+a buy & hold that lost money, DOGE is a tie, and SOL is a clear loss. Two wins, one tie, one loss
+across four markets it was never tuned on is weak-positive evidence, not a vindication.
 
 ### Pushing harder toward the target
 
@@ -228,41 +237,37 @@ Same walk-forward, varying only the volatility target and leverage cap:
 
 | Target vol | Max leverage | Final equity | Max drawdown | Bootstrap p(ruin) |
 |---|---|---|---|---|
-| 0.30 | 1.0x | $410 | -27% | 0% |
-| 0.50 | 1.5x | $773 | -42% | 0% |
-| 0.50 | 2.0x | $1,024 | -40% | 0% |
-| 0.80 | 2.0x | $2,676 | -48% | 0% |
-| 0.80 | 3.0x | $2,657 | -60% | 0% |
-| 1.20 | 3.0x | $5,252 | -64% | 0% |
+| 0.30 | 1.0x | $398 | -24% | 0% |
+| 0.50 | 1.5x | $806 | -38% | 0% |
+| 0.50 | 2.0x | $887 | -41% | 0% |
+| 0.80 | 2.0x | $2,550 | -47% | 0% |
+| 0.80 | 3.0x | $2,747 | -54% | 0% |
+| 1.20 | 3.0x | $4,212 | -65% | 0% |
 
 **Do not read that `p(ruin)` column as a safety guarantee.** A block bootstrap of daily returns
-cannot produce a crash worse than the worst stretch already in the sample, and the engine does not
-model exchange liquidation, funding spikes or a gap that blows through a stop overnight. Real ruin
-risk at 3x leverage on daily crypto is meaningfully above zero; the column says only that nothing
-*in this sample, reshuffled* killed the account.
+cannot produce a crash worse than the worst stretch already in the sample, and the engine models
+neither exchange liquidation, nor funding spikes, nor a gap that blows through a stop overnight.
+Real ruin risk at 3x leverage on daily crypto is meaningfully above zero; the column says only that
+nothing *in this sample, reshuffled* killed the account.
 
 ### Robustness
 
 - **Block bootstrap** of the realised out-of-sample returns (5,000 resampled histories):
-  59.5% reach $1,000, median final equity $1,014, 5th percentile $105, 95th percentile $11,330,
-  typical worst drawdown -56%.
-- **Deflated Sharpe: 0.17 - 0.46**, counting 150 distinct configurations at the optimistic end and
+  58.8% reach $1,000, median final equity $957, 5th percentile $92, 95th percentile $12,321,
+  typical worst drawdown -59%.
+- **Deflated Sharpe: 0.15 - 0.44**, counting 150 distinct configurations at the optimistic end and
   2,850 evaluations at the pessimistic end. Below 0.5 at both ends, which is the honest verdict:
-  **an observed Sharpe of ~0.9 over this sample is within what a search this wide could produce
+  **an observed Sharpe of 0.84 over this sample is within what a search this wide could produce
   from noise alone.** The equity curve may still reflect something real; this statistic does not
   establish that it does.
-- **Diversification** helps risk, not return: BTC+ETH lifted Sharpe from ~0.91 to ~1.01 and cut
-  max drawdown from -50% to -39%, while median final equity fell from ~$1,195 to ~$720.
 
 ### What to take from this
 
-The framework does its job - it is hard to fool, and it says clearly when there is nothing there.
-The strategy inside it earned a 10x over a decade that contained two of the largest bull markets in
-any asset class, and has earned close to nothing since. If you fund this, fund it as a leveraged,
-drawdown-controlled bet on crypto trends resuming - not as a machine that turns $100 into $1,000 on
+The framework does its job — it is hard to fool, and it says clearly when there is nothing there.
+The strategy inside it earned a 10x over a decade containing two of the largest bull markets in any
+asset class, and close to nothing since. If you fund this, fund it as a leveraged,
+drawdown-controlled bet on crypto trends resuming — not as a machine that turns $100 into $1,000 on
 a schedule.
-
----
 
 ## Part two: the cross-sectional agent (100+ stocks, and a learner)
 
@@ -408,6 +413,7 @@ vacuously.
 | **Tradeability peeked at the same bar's close.** The engine decided whether a name could be traded at bar `t`'s open by requiring bar `t`'s *close* to be finite — not knowable when the order goes in, and it let the backtest skip a name on its final day using information from the end of that day. | **Fixed.** Tradeability now depends on the open alone; marking falls back open → last print. |
 | **Universe membership used the whole sample.** `min_history(bars)` keeps names by their *total* bar count, including bars that had not happened yet. | **Documented, and an alternative added.** `require_history_before(date, bars)` is the point-in-time-correct filter. The engine already skips a name that has not listed, so the total-history filter buys tidiness, not correctness. |
 | Trailing stop trailed on the same bar's high it was then tested against. | Fixed earlier; regression test in `test_engine.py`. |
+| **Benchmark compared across different start dates.** A buy-and-hold curve beginning in 2015 was sliced to the traded window and its *level* compared against an account starting at $100 in 2017, crediting the benchmark with everything it earned before the strategy existed. Not look-ahead in the strategy, but the same family of error: a comparison that is not one. | **Fixed.** `metrics.summarize` rebases any benchmark to the same start date and capital, with a test. Every reported benchmark was re-measured. |
 | Ridge targets overlapping the test window. | Purged, with the negative control above. |
 | Everything else — indicators, strategies, blending, sizing, features, rankers, both walk-forwards. | Clean under poisoning. |
 

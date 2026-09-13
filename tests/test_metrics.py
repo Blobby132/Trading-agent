@@ -81,3 +81,27 @@ def test_format_summary_mentions_the_target():
     text = m.format_summary(stats, "Test")
     assert "TARGET REACHED" in text
     assert "$1,500.00" in text
+
+
+def test_benchmark_is_rebased_to_the_same_start():
+    """Comparing levels across different start dates is not a comparison."""
+    idx = pd.date_range("2020-01-01", periods=5, freq="1D", tz="UTC")
+    equity = pd.Series([100.0, 110.0, 120.0, 130.0, 140.0], index=idx)
+    # a benchmark curve that was already at 1000 when the account opened at 100
+    bench = pd.Series([1000.0, 1100.0, 1200.0, 1300.0, 1400.0], index=idx)
+
+    class R:
+        exec_config = type("E", (), {"periods_per_year": 365.0, "initial_capital": 100.0,
+                                     "target_equity": 1000.0})()
+        returns = equity.pct_change().fillna(0.0)
+        weights = pd.DataFrame(1.0, index=idx, columns=["a"])
+        trades = pd.DataFrame()
+        costs = pd.DataFrame(index=idx)
+        meta = {}
+    R.equity = equity
+
+    stats = m.summarize(R(), benchmark=bench)
+    # both grew 40% over the window, so both must finish at the same equity
+    assert stats["benchmark_final_equity"] == pytest.approx(140.0)
+    assert stats["benchmark_total_return"] == pytest.approx(0.4)
+    assert stats["excess_return"] == pytest.approx(0.0, abs=1e-12)
