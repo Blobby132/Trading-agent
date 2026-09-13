@@ -1,0 +1,41 @@
+[
+ {
+  "name": "us_large_cap_momentum",
+  "label": "fixed 12-1 momentum, top decile, monthly",
+  "holdout_start": "2024-01-01T00:00:00+00:00",
+  "at": "2026-09-13T07:59:14+00:00",
+  "stats": {
+   "final_equity": 278.8286781679067,
+   "total_return": 1.7882867816790666,
+   "sharpe": 1.488577451304984,
+   "max_drawdown": -0.22587954698214874,
+   "calmar": 2.064919846492772
+  }
+ },
+ {
+  "name": "us_large_cap_momentum",
+  "label": "same thing again, to demonstrate the ledger",
+  "holdout_start": "2024-01-01T00:00:00+00:00",
+  "at": "2026-09-13T07:59:14+00:00",
+  "stats": {
+   "final_equity": 278.8286781679067,
+   "total_return": 1.7882867816790666,
+   "sharpe": 1.488577451304984,
+   "max_drawdown": -0.22587954698214874,
+   "calmar": 2.064919846492772
+  }
+ },
+ {
+  "name": "notebook_demo",
+  "label": "fixed 12-1 momentum, top decile, monthly",
+  "holdout_start": "2024-01-01T00:00:00+00:00",
+  "at": "2026-09-13T08:45:46+00:00",
+  "stats": {
+   "final_equity": 278.8286781679067,
+   "total_return": 1.7882867816790666,
+   "sharpe": 1.488577451304984,
+   "max_drawdown": -0.22587954698214874,
+   "calmar": 2.064919846492772
+  }
+ }
+]

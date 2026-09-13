@@ -1,0 +1,112 @@
+{
+ "capital": 100.0,
+ "cash": 100.0,
+ "positions": {},
+ "history": [
+  {
+   "date": "2026-09-11T00:00:00+00:00",
+   "equity": 100.0,
+   "cash": 100.0,
+   "n_positions": 0
+  }
+ ],
+ "orders": [],
+ "pending": [
+  {
+   "symbol": "AMAT",
+   "side": "BUY",
+   "target_weight": 0.08333333333333333,
+   "estimated_price": 456.49,
+   "decided_on": "2026-09-11T00:00:00+00:00"
+  },
+  {
+   "symbol": "AMD",
+   "side": "BUY",
+   "target_weight": 0.08333333333333333,
+   "estimated_price": 516.13,
+   "decided_on": "2026-09-11T00:00:00+00:00"
+  },
+  {
+   "symbol": "CAT",
+   "side": "BUY",
+   "target_weight": 0.08333333333333333,
+   "estimated_price": 818.57,
+   "decided_on": "2026-09-11T00:00:00+00:00"
+  },
+  {
+   "symbol": "CSCO",
+   "side": "BUY",
+   "target_weight": 0.08333333333333333,
+   "estimated_price": 112.13,
+   "decided_on": "2026-09-11T00:00:00+00:00"
+  },
+  {
+   "symbol": "FDX",
+   "side": "BUY",
+   "target_weight": 0.08333333333333333,
+   "estimated_price": 311.99,
+   "decided_on": "2026-09-11T00:00:00+00:00"
+  },
+  {
+   "symbol": "INTC",
+   "side": "BUY",
+   "target_weight": 0.08333333333333333,
+   "estimated_price": 102.94,
+   "decided_on": "2026-09-11T00:00:00+00:00"
+  },
+  {
+   "symbol": "LLY",
+   "side": "BUY",
+   "target_weight": 0.08333333333333333,
+   "estimated_price": 1115.7,
+   "decided_on": "2026-09-11T00:00:00+00:00"
+  },
+  {
+   "symbol": "LRCX",
+   "side": "BUY",
+   "target_weight": 0.08333333333333333,
+   "estimated_price": 298.22,
+   "decided_on": "2026-09-11T00:00:00+00:00"
+  },
+  {
+   "symbol": "MPC",
+   "side": "BUY",
+   "target_weight": 0.08333333333333333,
+   "estimated_price": 395.93,
+   "decided_on": "2026-09-11T00:00:00+00:00"
+  },
+  {
+   "symbol": "MU",
+   "side": "BUY",
+   "target_weight": 0.08333333333333333,
+   "estimated_price": 975.26,
+   "decided_on": "2026-09-11T00:00:00+00:00"
+  },
+  {
+   "symbol": "PSX",
+   "side": "BUY",
+   "target_weight": 0.08333333333333333,
+   "estimated_price": 259.47,
+   "decided_on": "2026-09-11T00:00:00+00:00"
+  },
+  {
+   "symbol": "VLO",
+   "side": "BUY",
+   "target_weight": 0.08333333333333333,
+   "estimated_price": 390.42,
+   "decided_on": "2026-09-11T00:00:00+00:00"
+  }
+ ],
+ "fill_at": "next_open",
+ "universe": "us_large_cap",
+ "source": "nasdaq",
+ "strategy": "mom_12_1",
+ "top_frac": 0.1,
+ "max_weight": 0.15,
+ "started": "2026-09-13T21:12:37+00:00",
+ "expected_annual_return": 0.3139868371037129,
+ "expected_annual_vol": 0.2905047537773707,
+ "cost_scenario": "base",
+ "periods_per_year": 252.0,
+ "last_financed_bar": "2026-09-11T00:00:00+00:00"
+}

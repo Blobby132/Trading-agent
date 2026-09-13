@@ -9,4 +9,10 @@ data/cache/*
 !data/cache/.gitkeep
 results/*
 !results/.gitkeep
+# Paper-trading state and the research ledgers are the record of a live
+# experiment, not build output. They have to survive a machine being rebuilt,
+# so they are tracked deliberately.
+!results/paper_account.json
+!results/research_ledger.jsonl
+!results/holdout_ledger.json
 .DS_Store
