@@ -175,16 +175,109 @@ def load_coinbase(
     return df.loc[(df.index >= start_ts) & (df.index <= end_ts)]
 
 
+
 # --------------------------------------------------------------------------- #
 # Yahoo Finance
 # --------------------------------------------------------------------------- #
+def load_yahoo_chart(
+    symbol: str = "AAPL",
+    interval: str = "1d",
+    start: str | _dt.datetime | None = "2005-01-01",
+    end: Optional[str | _dt.datetime] = None,
+    *,
+    adjust: bool = True,
+    session=None,
+    timeout: int = 30,
+    retries: int = 6,
+    backoff: float = 5.0,
+) -> pd.DataFrame:
+    """Download candles straight from Yahoo's chart endpoint.
+
+    Preferred over :func:`load_yahoo` because it needs neither the ``yfinance``
+    dependency nor Yahoo's cookie/crumb handshake, which fails behind many
+    proxies and in locked-down notebook environments.
+
+    With ``adjust=True`` the OHLC series is scaled by ``adjclose / close``, so
+    splits and dividends do not appear as price gaps. That is what you want for
+    a total-return backtest; pass ``adjust=False`` for raw traded prices.
+    """
+    import requests
+
+    sess = session or requests.Session()
+    # A fresh Session already carries "python-requests/x.y", so setdefault would
+    # silently leave it in place - and Yahoo rate-limits that agent hard.
+    if "python-requests" in sess.headers.get("User-Agent", ""):
+        sess.headers["User-Agent"] = (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+        )
+    p1 = int(pd.Timestamp(start, tz="UTC").timestamp()) if start is not None else 0
+    p2 = int(
+        (pd.Timestamp(end, tz="UTC") if end is not None else pd.Timestamp.now(tz="UTC")).timestamp()
+    )
+    params = {"period1": p1, "period2": p2, "interval": interval, "events": "div,split"}
+    # Yahoo rate-limits bursts, which matters when loading a 100-name universe.
+    # Back off and alternate hosts rather than failing the whole run.
+    hosts = ("query1.finance.yahoo.com", "query2.finance.yahoo.com")
+    resp = None
+    for attempt in range(retries):
+        host = hosts[attempt % len(hosts)]
+        resp = sess.get(
+            f"https://{host}/v8/finance/chart/{symbol}", params=params, timeout=timeout
+        )
+        if resp.status_code == 429 or resp.status_code >= 500:
+            # Yahoo's burst limiter stays tripped for a while; honour Retry-After
+            # when it sends one and otherwise back off geometrically.
+            wait = float(resp.headers.get("Retry-After") or 0) or backoff * (2**attempt)
+            time.sleep(min(wait, 60.0))
+            continue
+        break
+    if resp is None:
+        raise RuntimeError(f"no response from Yahoo for {symbol}")
+    if resp.status_code == 429:
+        raise RuntimeError(f"Yahoo rate-limited {symbol} after {retries} attempts")
+    resp.raise_for_status()
+    payload = resp.json().get("chart", {})
+    if payload.get("error"):
+        raise RuntimeError(f"Yahoo rejected {symbol}: {payload['error']}")
+    results = payload.get("result") or []
+    if not results:
+        raise RuntimeError(f"Yahoo returned no data for {symbol}")
+
+    node = results[0]
+    quote = node["indicators"]["quote"][0]
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(node["timestamp"], unit="s", utc=True),
+            "open": quote["open"],
+            "high": quote["high"],
+            "low": quote["low"],
+            "close": quote["close"],
+            "volume": quote["volume"],
+        }
+    )
+    adjclose = (node["indicators"].get("adjclose") or [{}])[0].get("adjclose")
+    if adjust and adjclose is not None:
+        ratio = pd.Series(adjclose, index=frame.index) / frame["close"]
+        ratio = ratio.replace([np.inf, -np.inf], np.nan).ffill().fillna(1.0)
+        for col in ("open", "high", "low", "close"):
+            frame[col] = frame[col] * ratio
+    # a daily bar is stamped at the exchange open; normalise to the session date
+    if interval in ("1d", "1wk", "1mo"):
+        frame["timestamp"] = frame["timestamp"].dt.normalize()
+    return _normalize(frame)
+
 def load_yahoo(
     symbol: str = "BTC-USD",
     interval: str = "1d",
     start: str = "2017-01-01",
     end: Optional[str] = None,
 ) -> pd.DataFrame:
-    """Download candles with yfinance (stocks, ETFs, FX and crypto)."""
+    """Download candles with yfinance.
+
+    Kept as a fallback; :func:`load_yahoo_chart` is the default path because it
+    has fewer moving parts. Requires the optional ``yfinance`` dependency.
+    """
     import yfinance as yf
 
     raw = yf.download(
@@ -195,6 +288,74 @@ def load_yahoo(
     if isinstance(raw.columns, pd.MultiIndex):  # single-symbol download still nests
         raw.columns = raw.columns.get_level_values(0)
     return _normalize(raw)
+
+
+# --------------------------------------------------------------------------- #
+# Nasdaq
+# --------------------------------------------------------------------------- #
+def load_nasdaq(
+    symbol: str = "AAPL",
+    interval: str = "1d",
+    start: str = "2016-01-01",
+    end: Optional[str] = None,
+    *,
+    session=None,
+    timeout: int = 30,
+) -> pd.DataFrame:
+    """Daily US equity bars from Nasdaq's public quote API.
+
+    A fallback for environments where Yahoo is unreachable or rate-limiting.
+    Two limitations matter and neither is cosmetic:
+
+    * **About ten years of history**, and no more - the endpoint caps out.
+    * **Split-adjusted but NOT dividend-adjusted.** Returns computed from these
+      prices are price returns, not total returns, so every name is understated
+      by its dividend yield. Cross-sectionally that is a systematic tilt, not
+      noise: it penalises high-yield names (utilities, telecoms, energy) against
+      zero-yield growth names by several percent a year, which is large relative
+      to the signal a ranking model is trying to find.
+
+    Prefer :func:`load_yahoo_chart`, whose adjusted closes are total-return,
+    whenever it is reachable.
+    """
+    import requests
+
+    sess = session or requests.Session()
+    if "python-requests" in sess.headers.get("User-Agent", ""):
+        sess.headers["User-Agent"] = (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+        )
+    sess.headers.setdefault("Accept", "application/json")
+    if interval != "1d":
+        raise ValueError("the Nasdaq endpoint only serves daily bars")
+
+    end_ts = pd.Timestamp(end) if end is not None else pd.Timestamp.utcnow().tz_localize(None)
+    resp = sess.get(
+        f"https://api.nasdaq.com/api/quote/{symbol}/historical",
+        params={
+            "assetclass": "stocks",
+            "fromdate": pd.Timestamp(start).strftime("%Y-%m-%d"),
+            "todate": end_ts.strftime("%Y-%m-%d"),
+            "limit": 99999,
+        },
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    table = (resp.json().get("data") or {}).get("tradesTable")
+    if not table or not table.get("rows"):
+        raise RuntimeError(f"Nasdaq returned no rows for {symbol}")
+
+    frame = pd.DataFrame(table["rows"])
+    frame = frame.rename(columns={"date": "timestamp"})
+    for col in ("open", "high", "low", "close", "volume"):
+        if col not in frame.columns:
+            raise RuntimeError(f"Nasdaq response for {symbol} lacks {col!r}")
+        frame[col] = pd.to_numeric(
+            frame[col].astype(str).str.replace(r"[$,]", "", regex=True), errors="coerce"
+        )
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], format="%m/%d/%Y", utc=True)
+    return _normalize(frame)
 
 
 def load_csv(path: str) -> pd.DataFrame:
@@ -283,8 +444,12 @@ def load_prices(
 
     if source == "coinbase":
         df = load_coinbase(symbol, interval=interval, start=start, end=end, **kwargs)
-    elif source in ("yahoo", "yfinance"):
+    elif source == "yahoo":
+        df = load_yahoo_chart(symbol, interval=interval, start=start, end=end, **kwargs)
+    elif source == "yfinance":
         df = load_yahoo(symbol, interval=interval, start=start, end=end, **kwargs)
+    elif source == "nasdaq":
+        df = load_nasdaq(symbol, interval=interval, start=start, end=end, **kwargs)
     elif source == "csv":
         df = load_csv(kwargs.pop("path", symbol))
     elif source == "synthetic":

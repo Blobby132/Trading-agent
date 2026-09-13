@@ -141,3 +141,63 @@ def test_a_full_exit_is_never_treated_as_dust(trending_prices):
     cfg = ExecutionConfig(initial_capital=100.0, min_trade_frac=0.25, fee_bps=0.0, slippage_bps=0.0)
     res = BacktestEngine(cfg, NO_RISK_LAYER).run(trending_prices, w)
     assert (res.weights.iloc[101:].abs().sum(axis=1) == 0).all(), "position lingered after the exit signal"
+
+
+def test_untradeable_bars_are_skipped_and_positions_liquidated():
+    """A name that lists late and delists early must behave sanely."""
+    idx = pd.date_range("2021-01-01", periods=40, freq="1D", tz="UTC")
+    live = pd.Series(100.0, index=idx)
+    late = pd.Series(50.0, index=idx)
+    late.iloc[:10] = np.nan      # had not listed yet
+    late.iloc[30:] = np.nan      # stopped trading
+    panel = {
+        "live": pd.DataFrame({"open": live, "high": live, "low": live, "close": live, "volume": 1.0}),
+        "late": pd.DataFrame({"open": late, "high": late, "low": late, "close": late, "volume": 1.0}),
+    }
+    w = pd.DataFrame({"live": 0.5, "late": 0.5}, index=idx)
+    res = BacktestEngine(FRICTIONLESS, NO_RISK_LAYER).run(panel, w)
+
+    assert (res.weights["late"].iloc[:10] == 0).all(), "traded a name before it listed"
+    assert res.weights["late"].iloc[15] > 0, "never traded the name while it was live"
+    assert (res.weights["late"].iloc[31:] == 0).all(), "held a position after it stopped trading"
+    assert (res.trades["reason"] == "delisted").any()
+    assert np.isfinite(res.equity).all() and (res.equity > 0).all()
+
+
+def test_a_universe_of_all_nan_prices_does_not_trade():
+    idx = pd.date_range("2021-01-01", periods=20, freq="1D", tz="UTC")
+    dead = pd.Series(np.nan, index=idx)
+    panel = {"x": pd.DataFrame({"open": dead, "high": dead, "low": dead, "close": dead, "volume": 1.0})}
+    res = BacktestEngine(FRICTIONLESS, NO_RISK_LAYER).run(panel, pd.DataFrame({"x": 1.0}, index=idx))
+    assert res.trades.empty
+    assert (res.equity == FRICTIONLESS.initial_capital).all()
+
+
+def test_dust_filter_scales_with_position_size_not_account_size(trending_prices):
+    """A 20-name book must still trade under the same min_trade_frac.
+
+    Measured against equity, a 10% floor would block every rebalance in a
+    portfolio whose positions are 5% of equity each.
+    """
+    idx = trending_prices.index
+    panel = {f"S{i}": trending_prices for i in range(20)}
+    weights = pd.DataFrame(0.05, index=idx, columns=list(panel))
+    weights.iloc[200:] = 0.04          # a 20% cut to every position
+    cfg = ExecutionConfig(initial_capital=100.0, min_trade_frac=0.10, fee_bps=0.0, slippage_bps=0.0)
+    res = BacktestEngine(cfg, NO_RISK_LAYER).run(panel, weights)
+    assert not res.trades.empty, "a 20-name book never traded at all"
+    # the 20% cut is larger than the 10% floor, so it must execute
+    after = res.weights.iloc[205].sum()
+    before = res.weights.iloc[150].sum()
+    assert after < before
+
+
+def test_dust_filter_still_suppresses_tiny_adjustments(trending_prices):
+    idx = trending_prices.index
+    panel = {f"S{i}": trending_prices for i in range(20)}
+    weights = pd.DataFrame(0.05, index=idx, columns=list(panel))
+    weights.iloc[200:] = 0.0495        # a 1% nudge, well under the floor
+    cfg = ExecutionConfig(initial_capital=100.0, min_trade_frac=0.10, fee_bps=0.0, slippage_bps=0.0)
+    res = BacktestEngine(cfg, NO_RISK_LAYER).run(panel, weights)
+    traded_after = res.trades.loc[res.trades.index > idx[201]] if not res.trades.empty else res.trades
+    assert traded_after.empty, "a 1% nudge should have been ignored as dust"

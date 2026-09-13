@@ -117,3 +117,91 @@ def recommend_symbol(
         agent_config=cfg,
         risk_config=risk_config,
     )
+
+
+# --------------------------------------------------------------------------- #
+# cross-sectional
+# --------------------------------------------------------------------------- #
+@dataclass
+class BasketRecommendation:
+    """Today's target basket from a cross-sectional ranker."""
+
+    as_of: pd.Timestamp
+    equity: float
+    positions: pd.DataFrame        # symbol, score, rank, weight, dollars, shares
+    n_live: int
+    long_only: bool
+    model: str
+
+    def __str__(self) -> str:
+        longs = self.positions[self.positions["weight"] > 0]
+        shorts = self.positions[self.positions["weight"] < 0]
+        lines = [
+            f"== basket as of {self.as_of.date()} - {self.model} ==",
+            f"  universe          {self.n_live} names ranked",
+            f"  account           ${self.equity:,.2f}",
+            f"  book              {len(longs)} long"
+            + (f", {len(shorts)} short" if len(shorts) else " (long only)"),
+            "",
+            f"  {'symbol':<8}{'rank':>6}{'score':>9}{'weight':>9}{'dollars':>11}{'shares':>12}",
+        ]
+        for _, row in self.positions.iterrows():
+            lines.append(
+                f"  {row['symbol']:<8}{int(row['rank']):>6}{row['score']:>9.2f}"
+                f"{row['weight']:>8.1%}{row['dollars']:>11,.2f}{row['shares']:>12.4f}"
+            )
+        return "\n".join(lines)
+
+
+def recommend_basket(
+    panel,
+    *,
+    ranker=None,
+    rules=None,
+    equity: float = 100.0,
+    features: Optional[list] = None,
+    periods_per_year: float = 252.0,
+) -> BasketRecommendation:
+    """Rank the universe on the latest bar and size the basket.
+
+    Uses the most recent complete bar, so this is what to hold from the next
+    open. Fractional share counts are given because a $100 account cannot buy
+    whole shares of most large caps - a broker offering fractional shares is a
+    hard requirement for running this at that size.
+    """
+    from .cross_section import EqualBlendRanker, PortfolioRules, scores_to_weights
+    from .features import feature_panel
+
+    ranker = ranker or EqualBlendRanker()
+    rules = rules or PortfolioRules()
+    feats = feature_panel(panel, features, periods_per_year=periods_per_year)
+    scores = ranker.score(feats)
+    weights = scores_to_weights(scores, rules)
+
+    as_of = panel.index[-1]
+    row_w = weights.loc[as_of]
+    row_s = scores.loc[as_of]
+    held = row_w[row_w.abs() > 1e-9]
+    price = panel.close.loc[as_of]
+
+    frame = pd.DataFrame(
+        {
+            "symbol": held.index,
+            "score": row_s.reindex(held.index).to_numpy(),
+            "weight": held.to_numpy(),
+            "dollars": (held * equity).to_numpy(),
+            "shares": (held * equity / price.reindex(held.index)).to_numpy(),
+        }
+    )
+    frame["rank"] = row_s.rank(ascending=False).reindex(frame["symbol"]).to_numpy()
+    frame = frame.sort_values("weight", ascending=False).reset_index(drop=True)
+    frame = frame[["symbol", "rank", "score", "weight", "dollars", "shares"]]
+
+    return BasketRecommendation(
+        as_of=as_of,
+        equity=float(equity),
+        positions=frame,
+        n_live=int(row_s.notna().sum()),
+        long_only=bool(rules.long_only),
+        model=getattr(ranker, "name", type(ranker).__name__),
+    )

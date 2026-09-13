@@ -101,15 +101,27 @@ def time_to_target(equity: pd.Series, target: float, periods_per_year: float = 3
     }
 
 
-def trade_stats(trades: pd.DataFrame) -> Dict[str, float]:
+def trade_stats(trades: pd.DataFrame, meta: Optional[Dict] = None) -> Dict[str, float]:
     if trades is None or trades.empty:
-        return {"n_trades": 0.0, "total_costs": 0.0}
+        # a run with record_trades=False keeps only the counters
+        meta = meta or {}
+        return {
+            "n_trades": float(meta.get("n_trades", 0.0)),
+            "total_costs": float(meta.get("total_costs", 0.0)),
+        }
     return {
         "n_trades": float(len(trades)),
         "total_costs": float(trades["cost"].sum()),
         "avg_trade_notional": float(trades["notional"].mean()),
         "stop_exits": float((trades["reason"] == "stop").sum()),
     }
+
+
+def _traded_notional(result) -> float:
+    """Total notional traded, from the log when it exists and the counter otherwise."""
+    if result.trades is not None and not result.trades.empty:
+        return float(result.trades["notional"].sum())
+    return float((result.meta or {}).get("traded_notional", 0.0))
 
 
 def summarize(result, benchmark: Optional[pd.Series] = None) -> Dict[str, float]:
@@ -138,14 +150,16 @@ def summarize(result, benchmark: Optional[pd.Series] = None) -> Dict[str, float]
         "max_gross_exposure": float(gross.max()),
         "time_in_market": float((gross > 1e-9).mean()),
         "turnover_per_year": float(
-            result.trades["notional"].sum() / max(eq.mean(), 1e-9) / (len(eq) / ppy)
-        )
-        if not result.trades.empty
-        else 0.0,
+            _traded_notional(result) / max(eq.mean(), 1e-9) / max(len(eq) / ppy, 1e-9)
+        ),
         "cost_drag": float(result.costs.sum().sum() / max(result.exec_config.initial_capital, 1e-9)),
         "bust": float(bool(result.meta.get("bust", False))),
     }
-    out.update(trade_stats(result.trades))
+    out.update(trade_stats(result.trades, result.meta))
+    if not result.trades.empty:
+        out["total_costs"] = float(result.trades["cost"].sum())
+    elif "fees" in getattr(result.costs, "columns", []):
+        out["total_costs"] = float(result.costs.sum().sum())
     out.update(time_to_target(eq, result.exec_config.target_equity, ppy))
 
     if benchmark is not None and len(benchmark) == len(eq):

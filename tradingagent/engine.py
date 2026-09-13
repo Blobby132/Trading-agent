@@ -49,6 +49,11 @@ class ExecutionConfig:
     target_equity: float = 1000.0    # the goal this project is built around
     stop_at_target: bool = False     # if True, stop trading once the goal is hit
     ruin_equity: float = 1.0         # below this the account is treated as dead
+    record_trades: bool = True       # set False in a parameter search: building a
+                                     # row per fill dominates the runtime when a
+                                     # hundred names are rebalanced thousands of
+                                     # times, and the search only reads summary
+                                     # statistics
 
 
 @dataclass
@@ -105,6 +110,16 @@ class BacktestEngine:
         highs = np.column_stack([panel[s]["high"].to_numpy() for s in symbols])
         lows = np.column_stack([panel[s]["low"].to_numpy() for s in symbols])
         closes = np.column_stack([panel[s]["close"].to_numpy() for s in symbols])
+
+        # A symbol that has not listed yet - or has stopped trading - is NaN.
+        # Those bars are not tradeable, and a position held into one has to be
+        # liquidated at the last price that did print. Marking uses the
+        # forward-filled close purely so the arithmetic stays finite.
+        tradeable = (
+            np.isfinite(opens) & np.isfinite(closes) & (opens > 0) & (closes > 0)
+        )
+        mark = pd.DataFrame(closes).ffill().to_numpy()
+        mark = np.where(np.isfinite(mark), mark, 0.0)
         atrs = np.column_stack(
             [
                 ind.atr(panel[s]["high"], panel[s]["low"], panel[s]["close"], self.risk.atr_n)
@@ -136,6 +151,10 @@ class BacktestEngine:
         peak = equity
         cooldown = 0
         kill_switch_events = 0
+        n_trades = 0
+        traded_notional = 0.0
+        record = bool(ec.record_trades)
+        stops_enabled = rc.atr_stop_mult > 0 or rc.take_profit_mult > 0
         dead = False
         frozen = False  # set when stop_at_target fires
 
@@ -166,11 +185,40 @@ class BacktestEngine:
                 kill_switch_events += 1
 
             # a freshly stopped-out asset is off limits until its lockout ends
-            for j in range(n_assets):
-                if lockout[j] > 0:
-                    lockout[j] -= 1
-                    if units[j] == 0.0:
-                        desired[j] = 0.0
+            for j in np.nonzero(lockout)[0]:
+                lockout[j] -= 1
+                if units[j] == 0.0:
+                    desired[j] = 0.0
+
+            # names that cannot be traded this bar: no new exposure, and any
+            # position left stranded in one is closed at its last printed price
+            live = tradeable[i]
+            bar_fees = 0.0
+            if not live.all():
+                desired = np.where(live, desired, 0.0)
+            for j in np.nonzero(~live & (units != 0.0))[0]:
+                exit_px = mark[i, j]
+                fee = abs(units[j]) * exit_px * cost_rate
+                cash += units[j] * exit_px - fee
+                bar_fees += fee
+                if record:
+                    trades.append(
+                        {
+                            "timestamp": index[i],
+                            "symbol": symbols[j],
+                            "side": "sell" if units[j] > 0 else "buy",
+                            "units": float(-units[j]),
+                            "price": float(exit_px),
+                            "notional": float(abs(units[j]) * exit_px),
+                            "cost": float(fee),
+                            "reason": "delisted",
+                            "equity_before": float(equity_prev),
+                        }
+                    )
+                n_trades += 1
+                traded_notional += abs(units[j]) * exit_px
+                units[j] = 0.0
+                stop_px[j] = tp_px[j] = entry_px[j] = 0.0
 
             # ---- gross exposure cap ------------------------------------ #
             gross = float(np.abs(desired).sum())
@@ -178,40 +226,48 @@ class BacktestEngine:
                 desired *= ec.max_leverage / gross
 
             # ---- fill at this bar's open ------------------------------- #
-            px_open = opens[i]
-            bar_fees = 0.0
-            target_units = np.where(px_open > 0, desired * equity_prev / np.maximum(px_open, 1e-12), 0.0)
+            px_open = np.where(live, opens[i], mark[i])
+            target_units = np.where(
+                live, desired * equity_prev / np.where(live, np.maximum(opens[i], 1e-12), 1.0), 0.0
+            )
             delta = target_units - units
             notional = np.abs(delta) * px_open
-            # Ignore dust: rebalancing noise is pure cost. Closing a position
-            # out entirely is never dust, though - suppressing that would leave
-            # a small position open long after the signal said to be flat.
+            # Ignore dust: rebalancing noise is pure cost. The threshold is a
+            # fraction of the *position* being adjusted, not of the account.
+            # Measured against equity it would be meaningless across book sizes:
+            # for a single full-size holding the two are identical, but in a
+            # 20-name portfolio each position is ~5% of equity, so a 10%-of-equity
+            # floor blocks every trade the strategy ever wants to make.
+            # Closing a position out entirely is never dust - suppressing that
+            # would leave a stale holding open long after the signal went flat.
             full_exit = (target_units == 0.0) & (units != 0.0)
-            too_small = (notional < ec.min_trade_frac * max(equity_prev, 1e-9)) & ~full_exit
+            position_ref = np.maximum(np.abs(target_units), np.abs(units)) * px_open
+            too_small = (notional < ec.min_trade_frac * position_ref) & ~full_exit
             delta = np.where(too_small, 0.0, delta)
             notional = np.abs(delta) * px_open
 
-            for j in range(n_assets):
-                if delta[j] == 0.0:
-                    continue
+            for j in np.nonzero(delta)[0]:
                 fee = notional[j] * cost_rate
                 cash -= delta[j] * px_open[j] + fee
                 bar_fees += fee
                 prev_units = units[j]
                 units[j] += delta[j]
-                trades.append(
-                    {
-                        "timestamp": index[i],
-                        "symbol": symbols[j],
-                        "side": "buy" if delta[j] > 0 else "sell",
-                        "units": float(delta[j]),
-                        "price": float(px_open[j]),
-                        "notional": float(notional[j]),
-                        "cost": float(fee),
-                        "reason": "rebalance",
-                        "equity_before": float(equity_prev),
-                    }
-                )
+                if record:
+                    trades.append(
+                        {
+                            "timestamp": index[i],
+                            "symbol": symbols[j],
+                            "side": "buy" if delta[j] > 0 else "sell",
+                            "units": float(delta[j]),
+                            "price": float(px_open[j]),
+                            "notional": float(notional[j]),
+                            "cost": float(fee),
+                            "reason": "rebalance",
+                            "equity_before": float(equity_prev),
+                        }
+                    )
+                n_trades += 1
+                traded_notional += notional[j]
                 # (re)arm the protective stop whenever a position opens or flips
                 if np.sign(units[j]) != np.sign(prev_units) or prev_units == 0.0:
                     entry_px[j] = px_open[j]
@@ -219,9 +275,10 @@ class BacktestEngine:
 
             # A position opened before the ATR had enough history would other-
             # wise run unprotected for ever; arm it as soon as ATR exists.
-            for j in range(n_assets):
-                if units[j] != 0.0 and stop_px[j] == 0.0 and np.isfinite(atrs[i, j]):
-                    stop_px[j], tp_px[j] = self._init_stops(units[j], entry_px[j], atrs[i, j])
+            if stops_enabled:
+                for j in np.nonzero(units)[0]:
+                    if stop_px[j] == 0.0 and np.isfinite(atrs[i, j]):
+                        stop_px[j], tp_px[j] = self._init_stops(units[j], entry_px[j], atrs[i, j])
 
             # ---- protective exits ------------------------------------- #
             # The stop level tested here was fixed before this bar opened, so a
@@ -229,9 +286,8 @@ class BacktestEngine:
             # test, using this bar's extremes, and only takes effect next bar -
             # trailing first would let a stop ride up on a high that had not
             # printed yet when the low came in.
-            for j in range(n_assets):
-                if units[j] == 0.0:
-                    stop_px[j] = tp_px[j] = 0.0
+            for j in (np.nonzero(units)[0] if stops_enabled else ()):
+                if not live[j]:
                     continue
 
                 exit_px = self._stop_exit_price(
@@ -242,19 +298,22 @@ class BacktestEngine:
                     fee = abs(qty) * exit_px * cost_rate
                     cash += units[j] * exit_px - fee      # sell longs / buy back shorts
                     bar_fees += fee
-                    trades.append(
-                        {
-                            "timestamp": index[i],
-                            "symbol": symbols[j],
-                            "side": "sell" if units[j] > 0 else "buy",
-                            "units": float(qty),
-                            "price": float(exit_px),
-                            "notional": float(abs(qty) * exit_px),
-                            "cost": float(fee),
-                            "reason": "stop",
-                            "equity_before": float(equity_prev),
-                        }
-                    )
+                    if record:
+                        trades.append(
+                            {
+                                "timestamp": index[i],
+                                "symbol": symbols[j],
+                                "side": "sell" if units[j] > 0 else "buy",
+                                "units": float(qty),
+                                "price": float(exit_px),
+                                "notional": float(abs(qty) * exit_px),
+                                "cost": float(fee),
+                                "reason": "stop",
+                                "equity_before": float(equity_prev),
+                            }
+                        )
+                    n_trades += 1
+                    traded_notional += abs(qty) * exit_px
                     units[j] = 0.0
                     stop_px[j] = tp_px[j] = entry_px[j] = 0.0
                     # having just been stopped out, stand aside for a while
@@ -272,7 +331,7 @@ class BacktestEngine:
                         stop_px[j] = lows[i, j] + band
 
             # ---- financing on leverage and shorts ---------------------- #
-            px_close = closes[i]
+            px_close = mark[i]
             exposure = units * px_close
             gross_exposure = float(np.abs(exposure).sum())
             short_notional = float(np.abs(np.minimum(exposure, 0.0)).sum())
@@ -322,6 +381,8 @@ class BacktestEngine:
                 "symbols": symbols,
                 "bust": bool(dead),
                 "kill_switch_events": int(kill_switch_events),
+                "n_trades": int(n_trades),
+                "traded_notional": float(traded_notional),
             },
         )
 
@@ -371,7 +432,10 @@ class BacktestEngine:
             if idx is None:
                 idx = df.index
             elif not df.index.equals(idx):
-                raise ValueError("all symbols must share one index; call data.align_universe first")
+                raise ValueError(
+                    "all symbols must share one index; use Panel.from_frames or "
+                    "data.align_universe"
+                )
         return panel
 
     @staticmethod
