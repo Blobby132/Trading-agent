@@ -40,8 +40,12 @@ class RiskConfig:
     reentry_lockout_bars: int = 3     # bars to stand aside after a stop-out
     max_drawdown_stop: float = 0.35   # flatten if equity falls this far from peak
     cooldown_bars: int = 10           # bars to stay flat after the kill switch
-    kelly_lookback: int = 0           # 0 disables the Kelly layer
+    kelly_lookback: int = 0           # 0 disables the Kelly layer. It stays off:
+                                      # see kelly_fraction() for why the evidence
+                                      # does not support sizing on it.
     kelly_fraction: float = 0.25      # fraction of full Kelly to actually use
+    kelly_min_observations: int = 120 # refuse to size on a shorter sample
+    kelly_cap: float = 1.0            # never exceed full Kelly
     risk_per_trade: float = 0.0       # if > 0, size so an ATR stop costs this
                                       # fraction of equity
 
@@ -73,16 +77,57 @@ def atr_risk_scale(
 
 
 def kelly_fraction(
-    strategy_returns: pd.Series, *, lookback: int, cap: float = 4.0
+    strategy_returns: pd.Series,
+    *,
+    lookback: int,
+    cap: float = 1.0,
+    min_observations: int = 120,
+    shrink: bool = True,
 ) -> pd.Series:
-    """Causal, capped Kelly estimate ``mu / sigma^2`` from trailing returns."""
+    """Shrunk, capped, sample-size-gated Kelly estimate.
+
+    Kelly is ``mu / sigma^2``, and the honest problem with it is that both terms
+    are estimated. ``mu`` is the hard one: its standard error is
+    ``sigma / sqrt(n)``, so over 60 daily bars the estimate of the mean is
+    dominated by noise, and dividing a noisy mean by a comparatively
+    well-estimated variance converts that noise directly into leverage. The
+    previous implementation accepted as few as ``lookback // 2`` observations
+    and allowed a 4x multiplier, which is how a run of luck became a large
+    position.
+
+    Three guards, all of which cost return in a backtest and are worth it:
+
+    * **A sample-size floor.** Nothing is sized until ``min_observations`` bars
+      exist. Below that the function returns zero, not a guess.
+    * **Confidence shrinkage.** The estimate is scaled by
+      ``1 - 1/t²`` where ``t`` is the trailing mean's t-statistic, so an edge
+      indistinguishable from zero produces no position and one that is strongly
+      established produces nearly the full estimate.
+    * **A cap of 1.0 by default.** Above full Kelly, expected growth *falls*
+      while variance keeps rising; there is never a reason to be there.
+
+    It remains **disabled by default** (``RiskConfig.kelly_lookback = 0``). The
+    evidence in this repository is not sufficient to justify sizing on it, and
+    the right response to insufficient evidence is to leave the component off
+    rather than to delete it.
+    """
     if lookback <= 0:
         return pd.Series(1.0, index=strategy_returns.index)
-    mu = strategy_returns.rolling(lookback, min_periods=lookback // 2).mean()
-    var = strategy_returns.rolling(lookback, min_periods=lookback // 2).var(ddof=0)
-    k = mu / var.replace(0.0, np.nan)
-    # shift by one so today's sizing cannot use today's realised return
-    return k.shift(1).clip(lower=0.0, upper=cap).fillna(0.0)
+
+    window = max(int(lookback), int(min_observations))
+    mean = strategy_returns.rolling(window, min_periods=window).mean()
+    std = strategy_returns.rolling(window, min_periods=window).std(ddof=1)
+    var = std**2
+    estimate = mean / var.replace(0.0, np.nan)
+
+    if shrink:
+        # t-statistic of the trailing mean; below |t| = 1 the edge is noise
+        t_stat = mean / (std.replace(0.0, np.nan) / np.sqrt(window))
+        confidence = (1.0 - 1.0 / t_stat.pow(2).clip(lower=1e-9)).clip(lower=0.0, upper=1.0)
+        estimate = estimate * confidence
+
+    # shift so today's size cannot use today's realised return
+    return estimate.shift(1).clip(lower=0.0, upper=cap).fillna(0.0)
 
 
 def apply_sizing(
@@ -112,7 +157,12 @@ def apply_sizing(
             atr_n=cfg.atr_n,
         )
     if cfg.kelly_lookback > 0 and strategy_returns is not None:
-        scale = scale * kelly_fraction(strategy_returns, lookback=cfg.kelly_lookback) * cfg.kelly_fraction
+        scale = scale * kelly_fraction(
+            strategy_returns,
+            lookback=cfg.kelly_lookback,
+            cap=cfg.kelly_cap,
+            min_observations=cfg.kelly_min_observations,
+        ) * cfg.kelly_fraction
 
     sized = (w * scale).clip(-cfg.max_leverage, cfg.max_leverage)
     small = sized.abs() < cfg.min_leverage

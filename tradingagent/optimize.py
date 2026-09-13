@@ -46,9 +46,11 @@ STRATEGY_SUBSETS: List[List[str]] = [
     ["ema_trend", "donchian", "ts_momentum", "mean_reversion"],
 ]
 
-#: Parameters the optimiser is allowed to choose. Everything in here is a
-#: genuine modelling choice, not a curve-fit knob on a single trade.
-DEFAULT_SEARCH_SPACE: Dict[str, Sequence] = {
+#: The **legacy** space: 20 parameters, 3.3 billion combinations. Kept so old
+#: results can be reproduced, and kept out of the default because a space that
+#: large searched over ~3,300 bars is a machine for finding coincidences. Every
+#: extra knob multiplies the number of ways to fit this particular sample.
+LEGACY_WIDE_SEARCH_SPACE: Dict[str, Sequence] = {
     # ensemble
     "strategies": list(range(len(STRATEGY_SUBSETS))),
     "weighting": ["adaptive", "equal", "best"],
@@ -75,6 +77,47 @@ DEFAULT_SEARCH_SPACE: Dict[str, Sequence] = {
     "allocation": ["inverse_vol", "equal", "momentum"],
     "max_positions": [0, 2, 3],
 }
+
+#: The default. Every entry is a choice with an economic argument behind it -
+#: *what* to trade, *which way*, *how much*, and *when to stop* - and the
+#: nuisance knobs that only exist because some function needed a number are
+#: pinned at their defaults rather than searched.
+#:
+#: Roughly 1,500 combinations instead of 3.3 billion. That is not a cosmetic
+#: reduction: the number of distinct ways to fit a sample is what a
+#: multiple-testing correction is correcting for, and the deflated Sharpe
+#: improves because the search is smaller, not because the strategy got better.
+DEFAULT_SEARCH_SPACE: Dict[str, Sequence] = {
+    # what to trade, and how to combine the views
+    "strategies": list(range(len(STRATEGY_SUBSETS))),
+    "weighting": ["adaptive", "equal"],   # "best" is winner-take-all: dropped
+    "perf_lookback": [60, 250],
+    "regime_filter": [0, 1],
+    "allow_short": [0, 1],
+    "signal_smooth": [1, 5],
+    # how much to hold
+    "target_vol": [0.30, 0.50, 0.80],
+    "max_leverage": [1.0, 2.0],
+    # when to stop holding it
+    "atr_stop_mult": [0.0, 6.0],
+    # -- pinned: nuisance parameters, not economic choices ------------------
+    "softmax_temp": [4.0],
+    "regime_trend": [200],
+    "ema_fast": [20],
+    "ema_slow": [100],
+    "donchian_entry": [40],
+    "mom_lookback": [60],
+    "trail_stop": [1],
+    "max_drawdown_stop": [0.35],
+    "min_trade_frac": [0.10],
+    "allocation": ["inverse_vol"],
+    "max_positions": [0],
+}
+
+
+def space_size(space: Dict[str, Sequence]) -> int:
+    """How many distinct configurations a space contains."""
+    return int(np.prod([len(v) for v in space.values()]))
 
 
 def params_to_configs(

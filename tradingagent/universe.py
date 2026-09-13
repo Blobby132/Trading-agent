@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -328,3 +328,136 @@ def load_panel(
             + (f", {len(failed)} failed" if failed else "")
         )
     return panel
+
+
+# --------------------------------------------------------------------------- #
+# point-in-time membership
+# --------------------------------------------------------------------------- #
+class MembershipProvider:
+    """Which symbols were legitimately in the universe on a given date.
+
+    The distinction this interface exists to make explicit:
+
+    * :class:`StaticMembership` — a list of names that are liquid *today*,
+      applied to every historical date. This is **survivorship-biased** and says
+      so. It is what the repository has been using.
+    * :class:`PointInTimeMembership` — real index membership with entry and exit
+      dates, so a backtest on 2016 sees the 2016 universe. This is what removes
+      the bias, and it needs data no free source provides.
+
+    Writing the interface rather than faking the data is deliberate. A framework
+    that quietly treats a static list as point-in-time produces results that
+    cannot be distinguished from correct ones by looking at them.
+    """
+
+    #: Whether this provider actually reflects historical membership.
+    point_in_time: bool = False
+
+    def members_on(self, date: pd.Timestamp) -> List[str]:
+        raise NotImplementedError
+
+    def mask(self, index: pd.DatetimeIndex, symbols: Sequence[str]) -> pd.DataFrame:
+        """A date x symbol boolean frame of eligibility."""
+        rows = {sym: [] for sym in symbols}
+        for date in index:
+            members = set(self.members_on(date))
+            for sym in symbols:
+                rows[sym].append(sym in members)
+        return pd.DataFrame(rows, index=index)
+
+    def describe(self) -> str:
+        raise NotImplementedError
+
+
+@dataclass
+class StaticMembership(MembershipProvider):
+    """Today's list, applied to all of history. Survivorship-biased by construction."""
+
+    symbols: Sequence[str]
+    point_in_time: bool = False
+
+    def members_on(self, date: pd.Timestamp) -> List[str]:
+        return list(self.symbols)
+
+    def mask(self, index: pd.DatetimeIndex, symbols: Sequence[str]) -> pd.DataFrame:
+        allowed = set(self.symbols)
+        return pd.DataFrame(
+            {sym: np.full(len(index), sym in allowed) for sym in symbols}, index=index
+        )
+
+    def describe(self) -> str:
+        return (
+            f"StaticMembership({len(self.symbols)} names) - NOT point-in-time. "
+            "Every historical date sees the universe as it is today, so companies "
+            "that were large and then failed are absent. Results over this "
+            "membership are an upper bound."
+        )
+
+
+@dataclass
+class PointInTimeMembership(MembershipProvider):
+    """Real membership, from a table of symbol / entered / exited.
+
+    Load it with :meth:`from_csv`. The file needs three columns::
+
+        symbol,entered,exited
+        AAPL,1982-11-30,
+        SIVB,1987-03-31,2023-03-10
+
+    An empty ``exited`` means still a member. No free data source publishes this
+    for a major index; vendors that do include Norgate, Sharadar and CRSP. Until
+    one is wired in, :func:`load_panel` keeps using the static list and says so.
+    """
+
+    intervals: Dict[str, List[Tuple[pd.Timestamp, Optional[pd.Timestamp]]]]
+    name: str = "point_in_time"
+    point_in_time: bool = True
+
+    @classmethod
+    def from_csv(cls, path: str, name: str = "point_in_time") -> "PointInTimeMembership":
+        frame = pd.read_csv(path)
+        required = {"symbol", "entered"}
+        if not required <= set(frame.columns):
+            raise ValueError(f"membership file needs columns {sorted(required)}; got {list(frame.columns)}")
+        intervals: Dict[str, List[Tuple[pd.Timestamp, Optional[pd.Timestamp]]]] = {}
+        for _, row in frame.iterrows():
+            entered = pd.Timestamp(row["entered"], tz="UTC")
+            raw_exit = row.get("exited")
+            exited = (
+                None if pd.isna(raw_exit) or str(raw_exit).strip() == ""
+                else pd.Timestamp(raw_exit, tz="UTC")
+            )
+            intervals.setdefault(str(row["symbol"]), []).append((entered, exited))
+        return cls(intervals=intervals, name=name)
+
+    def members_on(self, date: pd.Timestamp) -> List[str]:
+        date = pd.Timestamp(date)
+        out = []
+        for symbol, spans in self.intervals.items():
+            for entered, exited in spans:
+                if entered <= date and (exited is None or date < exited):
+                    out.append(symbol)
+                    break
+        return out
+
+    def describe(self) -> str:
+        return (
+            f"PointInTimeMembership({self.name}, {len(self.intervals)} symbols) - "
+            "point-in-time. Each date sees only the names that were members then."
+        )
+
+
+def apply_membership(panel: "Panel", provider: MembershipProvider) -> "Panel":
+    """Blank out bars for names that were not members on that date.
+
+    Non-members become NaN, which the execution engine already understands as
+    "not tradeable" - the same mechanism that handles a name that has not listed
+    yet. So point-in-time membership needs no change to the engine at all; it
+    only needs the data.
+    """
+    eligible = provider.mask(panel.index, panel.symbols)
+    blanked = {}
+    for field in OHLCV_COLUMNS:
+        frame = getattr(panel, field).copy()
+        blanked[field] = frame.where(eligible.reindex_like(frame).fillna(False))
+    return Panel(**blanked)

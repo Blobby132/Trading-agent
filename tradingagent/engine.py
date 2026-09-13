@@ -163,14 +163,21 @@ class BacktestEngine:
         mark_df = pd.DataFrame(closes).where(np.isfinite(closes) & (closes > 0), pd.DataFrame(opens))
         mark = mark_df.ffill().to_numpy()
         mark = np.where(np.isfinite(mark), mark, 0.0)
-        atrs = np.column_stack(
-            [
-                ind.atr(panel[s]["high"], panel[s]["low"], panel[s]["close"], self.risk.atr_n)
-                .shift(1)  # the ATR that was known when the order was placed
-                .to_numpy()
-                for s in symbols
-            ]
-        )
+        # ATR is only needed when a protective stop is armed. Computing it
+        # unconditionally cost a full pass over every symbol on every call, and
+        # a walk-forward makes thousands of calls over overlapping windows with
+        # stops switched off.
+        if rc.atr_stop_mult > 0 or rc.take_profit_mult > 0:
+            atrs = np.column_stack(
+                [
+                    ind.atr(panel[s]["high"], panel[s]["low"], panel[s]["close"], rc.atr_n)
+                    .shift(1)  # the ATR that was known when the order was placed
+                    .to_numpy()
+                    for s in symbols
+                ]
+            )
+        else:
+            atrs = np.full((len(index), len(symbols)), np.nan)
         w_des = tw_exec.to_numpy()
 
         n_bars, n_assets = closes.shape

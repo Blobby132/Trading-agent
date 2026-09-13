@@ -123,3 +123,60 @@ def test_require_history_before_keeps_every_field_aligned():
     assert len(kept.symbols) == 5
     for field in ("open", "high", "low", "close", "volume"):
         assert list(getattr(kept, field).columns) == kept.symbols
+
+
+# --------------------------------------------------------------------------- #
+# point-in-time membership
+# --------------------------------------------------------------------------- #
+def test_static_membership_admits_it_is_biased():
+    from tradingagent.universe import StaticMembership
+
+    provider = StaticMembership(["A", "B"])
+    assert provider.point_in_time is False
+    assert "NOT point-in-time" in provider.describe()
+
+
+def test_point_in_time_membership_respects_entry_and_exit(tmp_path):
+    from tradingagent.universe import PointInTimeMembership
+
+    path = tmp_path / "members.csv"
+    path.write_text("symbol,entered,exited\nA,2019-01-01,\nB,2020-06-01,\nC,2019-01-01,2020-04-01\n")
+    provider = PointInTimeMembership.from_csv(str(path))
+    assert provider.point_in_time is True
+    assert set(provider.members_on(pd.Timestamp("2019-06-01", tz="UTC"))) == {"A", "C"}
+    assert set(provider.members_on(pd.Timestamp("2020-07-01", tz="UTC"))) == {"A", "B"}
+
+
+def test_membership_file_requires_the_right_columns(tmp_path):
+    from tradingagent.universe import PointInTimeMembership
+
+    path = tmp_path / "bad.csv"
+    path.write_text("ticker,date\nA,2019-01-01\n")
+    with pytest.raises(ValueError, match="needs columns"):
+        PointInTimeMembership.from_csv(str(path))
+
+
+def test_applying_membership_blanks_non_members(tmp_path):
+    from tradingagent.universe import PointInTimeMembership, apply_membership
+
+    panel = Panel.from_frames({
+        s: synthetic_ohlcv(400, seed=i, start="2020-01-01")
+        for i, s in enumerate(["A", "B", "C"])
+    })
+    path = tmp_path / "m.csv"
+    path.write_text("symbol,entered,exited\nA,2019-01-01,\nB,2020-06-01,\nC,2019-01-01,2020-04-01\n")
+    restricted = apply_membership(panel, PointInTimeMembership.from_csv(str(path)))
+
+    assert restricted.close["B"].loc[:"2020-05-30"].isna().all(), "traded before it was a member"
+    assert restricted.close["C"].loc["2020-05-01":].isna().all(), "traded after it left"
+    assert restricted.close["A"].notna().any()
+    # the engine needs no change: a non-member is simply not tradeable
+    assert not restricted.tradeable()["B"].loc[:"2020-05-30"].any()
+
+
+def test_static_membership_leaves_everything_tradeable():
+    from tradingagent.universe import StaticMembership, apply_membership
+
+    panel = Panel.from_frames({s: synthetic_ohlcv(200, seed=i) for i, s in enumerate(["A", "B"])})
+    same = apply_membership(panel, StaticMembership(["A", "B"]))
+    pd.testing.assert_frame_equal(same.close, panel.close)
