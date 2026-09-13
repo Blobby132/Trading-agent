@@ -21,6 +21,8 @@ from .data import align_universe, bars_per_year, load_universe
 from .engine import ExecutionConfig, buy_and_hold_equity
 from .metrics import deflated_sharpe, format_summary, monte_carlo_paths
 from .optimize import WalkForwardConfig, walk_forward
+from .execution import cost_scenario
+from .robustness import classify_regimes, era_report, regime_report, robustness_battery
 from .universe import UNIVERSES, load_panel
 from .xs_optimize import (
     XS_SEARCH_SPACE,
@@ -52,11 +54,15 @@ def build_parser() -> argparse.ArgumentParser:
     acct.add_argument("--slippage-bps", type=float, default=5.0)
     acct.add_argument("--max-leverage", type=float, default=2.0)
     acct.add_argument("--stop-at-target", action="store_true", help="stop trading once the goal is hit")
+    acct.add_argument("--cost-scenario", default="base", choices=["low", "base", "high"],
+                      help="cost model to charge; 'base' reproduces the historical assumption")
+    acct.add_argument("--fill-at", default="next_open", choices=["next_open", "next_close"],
+                      help="where a scheduled order executes relative to the signal bar")
 
     run = p.add_argument_group("run")
     run.add_argument(
         "--mode", default="walkforward",
-        choices=["walkforward", "single", "cross-section"],
+        choices=["walkforward", "single", "cross-section", "robustness"],
         help="cross-section ranks a universe against itself; the others trade each symbol on its own",
     )
     run.add_argument("--universe", default=None,
@@ -75,6 +81,10 @@ def build_parser() -> argparse.ArgumentParser:
     out = p.add_argument_group("output")
     out.add_argument("--outdir", default="results")
     out.add_argument("--no-plots", action="store_true")
+    out.add_argument("--robust-starts", nargs="*", default=None,
+                     help="extra start dates for the robustness battery")
+    out.add_argument("--robust-ends", nargs="*", default=None,
+                     help="extra end dates for the robustness battery")
     return p
 
 
@@ -155,15 +165,18 @@ def main(argv: List[str] | None = None) -> int:
 
     exec_cfg = ExecutionConfig(
         initial_capital=args.capital,
-        fee_bps=args.fee_bps,
-        slippage_bps=args.slippage_bps,
+        costs=cost_scenario(args.cost_scenario),
         max_leverage=args.max_leverage,
         periods_per_year=ppy,
         target_equity=args.target,
         stop_at_target=args.stop_at_target,
+        fill_at=args.fill_at,
     )
 
-    bench = buy_and_hold_equity(first, args.capital, args.fee_bps)
+    bench = buy_and_hold_equity(first, args.capital, costs=cost_scenario(args.cost_scenario))
+
+    if args.mode == "robustness":
+        return _robustness(args, data, first, exec_cfg, ppy)
 
     if args.mode == "single":
         risk = RiskConfig(max_leverage=args.max_leverage)
@@ -194,6 +207,56 @@ def main(argv: List[str] | None = None) -> int:
     print()
     print(format_summary(stats, title))
     _finish(args, equity, returns, weights, folds, stats, title, n_trials, n_distinct, ppy, bench)
+    return 0
+
+
+def _robustness(args, data, first, exec_cfg, ppy) -> int:
+    """Run the full robustness battery plus a regime decomposition."""
+    from dataclasses import replace as _replace
+
+    from .agent import AgentConfig, TradingAgent
+    from .risk import RiskConfig
+
+    print("\n=== robustness battery ===")
+    print("  Not a leaderboard. The useful reading is WHICH scenarios break it.\n")
+
+    def run(**kwargs):
+        costs = kwargs.pop("costs", None)
+        fill_at = kwargs.pop("fill_at", exec_cfg.fill_at)
+        start, end = kwargs.pop("start", None), kwargs.pop("end", None)
+        kwargs.pop("seed", None)
+        frame = data if isinstance(data, pd.DataFrame) else first
+        window = frame.loc[start:end]
+        cfg = _replace(exec_cfg, costs=costs or exec_cfg.cost_model(), fill_at=fill_at)
+        agent = TradingAgent(AgentConfig(periods_per_year=ppy), RiskConfig(max_leverage=args.max_leverage))
+        return agent.backtest(window, cfg).stats()
+
+    battery = robustness_battery(
+        run,
+        seeds=(),
+        start_dates=(None, *(args.robust_starts or [])),
+        end_dates=(None, *(args.robust_ends or [])),
+        verbose=True,
+    )
+
+    print("\n=== regimes ===")
+    print("  Where it works, where it fails, and whether the failures are the")
+    print("  ones the strategy's design predicts.\n")
+    agent = TradingAgent(AgentConfig(periods_per_year=ppy), RiskConfig(max_leverage=args.max_leverage))
+    result = agent.backtest(first, exec_cfg)
+    regimes = classify_regimes(first["close"], periods_per_year=ppy)
+    report = regime_report(result.equity, regimes, periods_per_year=ppy)
+    if not report.empty:
+        print(report.to_string(index=False, float_format=lambda v: f"{v:,.3f}"))
+    eras = era_report(result.equity, periods_per_year=ppy)
+    if not eras.empty:
+        print()
+        print(eras.to_string(index=False, float_format=lambda v: f"{v:,.3f}"))
+
+    os.makedirs(args.outdir, exist_ok=True)
+    battery.to_csv(os.path.join(args.outdir, "robustness.csv"), index=False)
+    report.to_csv(os.path.join(args.outdir, "regimes.csv"), index=False)
+    print(f"\n  saved {os.path.join(args.outdir, 'robustness.csv')} and regimes.csv")
     return 0
 
 

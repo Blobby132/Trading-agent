@@ -156,10 +156,16 @@ def summarize(result, benchmark: Optional[pd.Series] = None) -> Dict[str, float]
         "bust": float(bool(result.meta.get("bust", False))),
     }
     out.update(trade_stats(result.trades, result.meta))
+    # "total_costs" means trading costs. Financing is a carrying cost, not a
+    # trading cost, and is reported separately - summing the whole costs frame
+    # made the meaning of this field depend on whether the trade log happened
+    # to be recorded.
     if not result.trades.empty:
         out["total_costs"] = float(result.trades["cost"].sum())
     elif "fees" in getattr(result.costs, "columns", []):
-        out["total_costs"] = float(result.costs.sum().sum())
+        out["total_costs"] = float(result.costs["fees"].sum())
+    if "financing" in getattr(result.costs, "columns", []):
+        out["financing_paid"] = float(result.costs["financing"].sum())
     out.update(time_to_target(eq, result.exec_config.target_equity, ppy))
 
     if benchmark is not None and len(benchmark) == len(eq):

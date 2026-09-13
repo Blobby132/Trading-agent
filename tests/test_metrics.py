@@ -105,3 +105,26 @@ def test_benchmark_is_rebased_to_the_same_start():
     assert stats["benchmark_final_equity"] == pytest.approx(140.0)
     assert stats["benchmark_total_return"] == pytest.approx(0.4)
     assert stats["excess_return"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_total_costs_means_the_same_thing_with_and_without_a_trade_log():
+    """Regression: the field used to swallow financing when the log was off."""
+    import numpy as np
+    from tradingagent.engine import BacktestEngine, ExecutionConfig
+    from tradingagent.risk import RiskConfig
+    from tradingagent.data import synthetic_ohlcv
+
+    prices = synthetic_ohlcv(300, seed=11)
+    weights = pd.Series(1.8, index=prices.index)       # levered, so financing is non-zero
+    risk = RiskConfig(target_vol=0.0, atr_stop_mult=0.0, max_drawdown_stop=0.0)
+
+    logged = m.summarize(BacktestEngine(
+        ExecutionConfig(initial_capital=100.0, max_leverage=2.0, min_trade_frac=0.0,
+                        record_trades=True), risk).run(prices, weights))
+    silent = m.summarize(BacktestEngine(
+        ExecutionConfig(initial_capital=100.0, max_leverage=2.0, min_trade_frac=0.0,
+                        record_trades=False), risk).run(prices, weights))
+
+    assert logged["financing_paid"] > 0, "test needs a run that actually pays financing"
+    assert silent["total_costs"] == pytest.approx(logged["total_costs"], rel=1e-9)
+    assert silent["financing_paid"] == pytest.approx(logged["financing_paid"], rel=1e-9)

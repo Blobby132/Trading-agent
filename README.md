@@ -526,6 +526,147 @@ my own work along the way.
 
 ---
 
+## Methodology
+
+Read this before any number in this repository. It states what the framework
+assumes, so results can be judged rather than taken.
+
+### Execution timing — one canonical model
+
+```
+bar T closes
+  └─ the strategy sees information available at T's close
+       └─ target weights are produced
+            └─ orders are scheduled
+                 └─ bar T+1 opens
+                      └─ orders fill at T+1's execution price
+                           └─ the book is marked at T+1
+```
+
+The lag is **one bar, always**, in the backtest and in paper trading. A weight
+formed on bar `T`'s close can never transact at that close.
+`tradingagent/execution.py` is the single definition; `engine.py` and `paper.py`
+both call it, and `tests/test_execution_parity.py` asserts their equity curves
+match exactly under every cost scenario.
+
+Order sizing uses the **execution reference price**, which models a *notional*
+(fractional-share) order: you ask for $8.33 of a name and the broker fills that
+dollar amount at whatever the opening print is. It is **not** valid for
+whole-share orders, where a share count must be committed before the open. At
+the account sizes this framework targets, fractional shares are a hard
+requirement anyway.
+
+### Cost assumptions
+
+Four components, charged as an **adverse fill price** rather than a rebate from
+cash, so the recorded trade price is what was actually paid:
+
+| Component | LOW | **BASE** | HIGH |
+|---|---|---|---|
+| fee (commission) | 2.0 bps | **10.0 bps** | 20.0 bps |
+| half-spread | 1.0 | **2.5** | 7.5 |
+| slippage | 1.0 | **2.5** | 7.5 |
+| market impact at full participation | 0 | **0** | 50 (√-law) |
+| **total per side** | **4 bps** | **15 bps** | **35 bps +impact** |
+| financing on leverage | 5%/yr | **8%/yr** | 12%/yr |
+| borrow on shorts | 6%/yr | **10%/yr** | 15%/yr |
+
+BASE is the default and reproduces the framework's historical assumption
+(`fee_bps=10` + `slippage_bps=5`) exactly, so adopting the model moved no
+published number. Impact is zero in LOW and BASE because at $100–$10,000 of
+notional, participation in a liquid name is indistinguishable from zero — turn
+it on before believing any capacity claim.
+
+Run `--cost-scenario low|base|high`. **A strategy that only works under LOW is
+fragile**, and the robustness battery says so explicitly.
+
+### Walk-forward
+
+```
+|<--- train --->|<-embargo->|<-- trade -->|
+                          |<--- train --->|<-embargo->|<-- trade -->|
+                                        (equity carries across windows)
+```
+
+Parameters are chosen on the training window and traded untouched on the window
+that follows. Three guards keep the test period out of the fit: the fit sees
+only training bars; observations whose forward return resolves after the
+training window are **purged**; and an embargo separates the two so rolling
+features cannot smear across the join.
+
+### The search space, and why it shrank
+
+The default space is **2,304 combinations across nine economically motivated
+parameters** — what to trade, which way, how much, when to stop. Nuisance knobs
+that exist only because some function needed a number are pinned.
+
+It used to be **20 parameters and 3.3 billion combinations**. Searching a space
+that large over ~3,300 bars is a machine for finding coincidences, and it is why
+the deflated Sharpe kept landing below 0.5. The old space survives as
+`LEGACY_WIDE_SEARCH_SPACE` for reproducing prior results.
+
+### Holdout
+
+`holdout.py` splits history into a development era and a reserved one. Both
+optimisers accept a `holdout=` argument and **raise** if handed reserved bars,
+rather than quietly training on data that is supposed to be unseen — the one
+failure mode that leaves no trace in the output afterwards. Every evaluation
+against the reserved era is recorded in a ledger, and the verdict degrades with
+each look: an era checked eleven times is not a holdout.
+
+### The research ledger
+
+`ledger.py` records every run: period, universe, parameters, seed, cost
+scenario, objective, results, and whether the result was used to **select**
+anything. `selection_count()` sums candidates across every selecting run, and
+that total — not one search's count — is what belongs in a multiple-testing
+correction. The searches you ran last week still happened.
+
+### Robustness
+
+`python -m tradingagent.cli --mode robustness` runs the battery: cost scenarios,
+extra slippage, wider spreads, seeds, start and end dates, and an alternative
+fill model, scored against stated acceptance floors (Sharpe ≥ 0.3, drawdown no
+worse than −40%, at least 20 trades). `parameter_stability` re-evaluates a
+chosen configuration at nearby values and flags spikes; `regime_report` splits
+performance by trend, volatility and drawdown events.
+
+### How to read a result
+
+These are four different claims, and the repository labels them separately:
+
+| Label | What it means | How much it is worth |
+|---|---|---|
+| **backtest** | fitted and evaluated on the same data | almost nothing on its own |
+| **out-of-sample** | walk-forward; parameters chosen only on earlier data | real, but subject to multiple testing |
+| **holdout** | an era reserved before building, checked once | the strongest historical evidence available |
+| **paper** | traded forward without money | the only evidence nothing in this repo can fool |
+| **live** | real money | not implemented here, deliberately |
+
+Nothing in this repository is a claim that the strategy is profitable. The
+framework's job is to make it hard to believe that by accident.
+
+### Known limitations
+
+- **The universe is not point-in-time.** `US_LARGE_CAP*` lists names liquid
+  *today*. `MembershipProvider` is the interface that fixes this and
+  `PointInTimeMembership` implements it — what is missing is the data, which no
+  free source publishes. `StaticMembership.describe()` says so out loud.
+- **Delisted names are absent** from the Nasdaq source entirely, because it is a
+  live-quote API. Yahoo serves most of them.
+- **Dividends** are included via Yahoo's adjusted closes and **excluded** from
+  the Nasdaq fallback, which understates high-yield names by a few percent a year
+   — a systematic cross-sectional tilt, not noise.
+- **Market impact is off by default**, so no capacity claim is supported.
+- **Kelly sizing is disabled by default** and should stay that way until there is
+  evidence to justify it.
+- **The 2019–2026 sample is overwhelmingly bullish.** The regime report shows
+  only ~2% of bars in a bear trend and ~1.6% in a benchmark drawdown past 20%,
+  so any statement about how the strategy behaves in a bear market rests on
+  almost no data.
+
+---
+
 ## Look-ahead audit
 
 Look-ahead is the failure that makes a backtest worthless while looking excellent, so it gets its
@@ -601,6 +742,9 @@ tradingagent/
   xs_optimize.py    the cross-sectional walk-forward learning loop
   metrics.py        statistics, time-to-target, bootstrap, deflated Sharpe
   report.py         tearsheet plots
+  execution.py      THE canonical execution + cost model (both paths use it)
+  robustness.py     parameter stability, regimes, the robustness battery
+  ledger.py         research ledger: every run, and whether it selected anything
   live.py           "what should I hold right now" - single name and basket
   risk_learner.py   learning applied to sizing instead of to signal
   survivorship.py   measures the bias, or bounds it by injecting failures
@@ -611,7 +755,8 @@ notebooks/
   Trading_Agent_Backtest.ipynb       part one: the single-asset agent
   Cross_Sectional_Stock_Agent.ipynb  part two: 124 stocks and the learner
   Making_It_Real.ipynb               part three: breadth, risk, bias, holdout, paper
-tests/              252 tests; test_no_lookahead.py is the look-ahead audit
+tests/              330 tests; test_no_lookahead.py and test_execution_parity.py
+                    are the causality and timing audits
 ```
 
 ### Configuration
