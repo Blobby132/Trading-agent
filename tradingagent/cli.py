@@ -142,7 +142,7 @@ def main(argv: List[str] | None = None) -> int:
             f"{stability.get('mean_consecutive_correlation', float('nan')):.2f}"
         )
         print("  models chosen per fold: " + str(folds["model"].value_counts().to_dict()))
-        _finish(args, equity, returns, weights, folds, stats, title, n_trials, n_distinct, ppy)
+        _finish(args, equity, returns, weights, folds, stats, title, n_trials, n_distinct, ppy, bench)
         return 0
 
 
@@ -193,11 +193,11 @@ def main(argv: List[str] | None = None) -> int:
 
     print()
     print(format_summary(stats, title))
-    _finish(args, equity, returns, weights, folds, stats, title, n_trials, n_distinct, ppy)
+    _finish(args, equity, returns, weights, folds, stats, title, n_trials, n_distinct, ppy, bench)
     return 0
 
 
-def _finish(args, equity, returns, weights, folds, stats, title, n_trials, n_distinct, ppy):
+def _finish(args, equity, returns, weights, folds, stats, title, n_trials, n_distinct, ppy, bench=None):
     """Shared reporting tail: bootstrap, deflation, files and plots."""
     mc = monte_carlo_paths(
         returns, initial_capital=args.capital, target=args.target, n_paths=2000, seed=args.seed

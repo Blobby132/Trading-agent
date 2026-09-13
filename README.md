@@ -156,8 +156,8 @@ look-ahead audit below. Reproduce with
 
 ![Walk-forward tearsheet for BTC-USD](docs/walkforward_btc.png)
 
-The fold bars in that third panel are the honest summary of this whole part: **only about a third
-of the six-month test windows were positive**, and three of them carry the entire result.
+The fold bars in that fourth panel are the honest summary of this whole part: **only 37% of the
+nineteen six-month test windows were positive**, and three of them carry the entire result.
 
 ### Headline - BTC-USD daily, traded 2017-07-29 -> 2026-09-12, five random seeds
 
