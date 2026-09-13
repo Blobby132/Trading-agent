@@ -130,3 +130,32 @@ def test_learner_output_is_causal(panel, equal_weights):
     clean = RiskLearner(cfg).apply(equal_weights, panel)
     dirty = RiskLearner(cfg).apply(equal_weights, poison_panel(panel, cut=600, seed=11))
     pd.testing.assert_frame_equal(clean.iloc[:600], dirty.iloc[:600], rtol=0, atol=0)
+
+
+def test_correlation_scale_sits_near_one_for_a_normal_book(panel, equal_weights):
+    """A book behaving like its own norm must not be shrunk.
+
+    An earlier version compared the diversification ratio against a fixed
+    constant of 2.0 and collapsed a perfectly ordinary equity book from 27% to
+    3% volatility. Calibrating against the book's own trailing median makes the
+    scale relative by construction.
+    """
+    scale = correlation_scale(equal_weights, panel.close).tail(300)
+    assert 0.7 < scale.median() < 1.4, f"a normal book was rescaled to {scale.median():.2f}"
+
+
+def test_correlation_scale_still_reacts_to_a_regime_change():
+    """It must stay responsive, not just be pinned to 1.0."""
+    idx = pd.date_range("2020-01-01", periods=1200, freq="1D", tz="UTC")
+    rng = np.random.default_rng(5)
+    common = rng.normal(0, 0.012, 1200)
+    cols = {}
+    for i in range(8):
+        idio = rng.normal(0, 0.012, 1200)
+        # independent for the first half, then everything moves together
+        mixed = np.concatenate([idio[:600], common[600:] + 0.2 * idio[600:]])
+        cols[f"S{i}"] = 100 * np.exp(np.cumsum(mixed))
+    close = pd.DataFrame(cols, index=idx)
+    w = pd.DataFrame(1.0 / 8, index=idx, columns=close.columns)
+    scale = correlation_scale(w, close)
+    assert scale.iloc[800:].mean() < scale.iloc[400:600].mean(), "no reaction to correlation spiking"

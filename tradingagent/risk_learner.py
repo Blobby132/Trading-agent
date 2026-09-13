@@ -92,16 +92,22 @@ def correlation_scale(
     port_ret = (lagged * rets).sum(axis=1)
 
     port_vol = port_ret.rolling(lookback, min_periods=lookback // 3).std(ddof=0)
-    # the volatility this book would have if every holding were independent
     name_vol = rets.rolling(lookback, min_periods=lookback // 3).std(ddof=0)
-    independent = np.sqrt(((lagged * name_vol) ** 2).sum(axis=1))
-
-    diversification = (independent / port_vol.replace(0.0, np.nan)).replace(
+    # Diversification ratio: the weighted-average volatility of the holdings
+    # over the volatility the book actually realises. It is 1.0 when everything
+    # moves together and rises as the holdings offset each other.
+    weighted_avg_vol = (lagged.abs() * name_vol).sum(axis=1)
+    diversification = (weighted_avg_vol / port_vol.replace(0.0, np.nan)).replace(
         [np.inf, -np.inf], np.nan
     )
-    # 1.0 means no diversification at all; higher is better. Scale relative to
-    # a typical long-only equity book, which achieves roughly 2x.
-    scale = (diversification / 2.0).clip(upper=max_scale)
+
+    # Calibrate against the book's *own* trailing norm rather than an absolute
+    # constant. What counts as well-diversified depends entirely on how many
+    # names are held and how correlated that asset class is, so a fixed target
+    # is a guess - and guessing it too high silently shrinks the book to
+    # nothing, which is exactly what an earlier version of this did.
+    norm = diversification.rolling(4 * lookback, min_periods=lookback).median()
+    scale = (diversification / norm.replace(0.0, np.nan)).clip(upper=max_scale)
     return scale.shift(1).fillna(1.0)
 
 
