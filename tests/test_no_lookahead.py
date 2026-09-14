@@ -284,6 +284,100 @@ def test_cross_sectional_walk_forward_ignores_a_poisoned_future():
 
 
 # --------------------------------------------------------------------------- #
+# layer 7: rescaled intervals and throttled trading frequency
+# --------------------------------------------------------------------------- #
+# Changing the candle interval and the rebalance cadence adds two new ways to
+# leak the future: a rescaled lookback that quietly reads past its own window,
+# and a throttle that holds a weight it could not have known to hold. Both get
+# the same poisoning treatment as everything else.
+def test_a_rescaled_agent_ignores_a_poisoned_future(clean, dirty):
+    """The rescaler must not turn a causal configuration into a leaky one."""
+    from tradingagent.timescale import CRYPTO_SCALES, rescale_agent_config, rescale_risk_config
+
+    scale = CRYPTO_SCALES["1h"]
+    agent_cfg = rescale_agent_config(
+        AgentConfig(perf_lookback=5, regime_trend=8, signal_smooth=2), scale
+    )
+    risk_cfg = rescale_risk_config(RiskConfig(vol_lookback=3, atr_n=2, cooldown_bars=1), scale)
+    a = TradingAgent(agent_cfg, risk_cfg)
+    b = TradingAgent(agent_cfg, risk_cfg)
+    assert_past_identical(a.sized_weight(clean), b.sized_weight(dirty), label="rescaled sized weight")
+
+
+@pytest.mark.parametrize("name", sorted(STRATEGY_REGISTRY))
+@pytest.mark.parametrize("interval", ["6h", "1h"])
+def test_rescaled_strategies_ignore_a_poisoned_future(clean, dirty, name, interval):
+    from tradingagent.timescale import CRYPTO_SCALES, rescale_strategy_params
+
+    scale = CRYPTO_SCALES[interval]
+    base = STRATEGY_REGISTRY[name].defaults()
+    # scale the defaults down first so the rescaled windows stay inside the
+    # fixture; the point is that rescaling preserves causality, not the size
+    shrunk = {
+        k: (max(2, int(v) // 20) if k in ("fast", "slow", "entry", "exit", "trend_filter",
+                                          "lookback", "rank_n", "trend", "n", "rsi_n", "adx_n",
+                                          "smooth") and v else v)
+        for k, v in base.items()
+    }
+    params = rescale_strategy_params(name, shrunk, scale)
+    strat = make_strategy(name, **params)
+    assert_past_identical(
+        strat.target_weight(clean), strat.target_weight(dirty), label=f"{name}@{interval}"
+    )
+
+
+@pytest.mark.parametrize("every", [1, 3, 24])
+def test_a_throttled_weight_ignores_a_poisoned_future(clean, dirty, every):
+    """Holding a book between rebalances reuses a past decision - never a future one."""
+    from tradingagent.timescale import throttle
+
+    a = throttle(TradingAgent(AgentConfig()).sized_weight(clean), every)
+    b = throttle(TradingAgent(AgentConfig()).sized_weight(dirty), every)
+    assert_past_identical(a, b, label=f"throttled every {every}")
+
+
+def test_a_throttled_walk_forward_ignores_a_poisoned_future():
+    """The whole sweep path: rescale, throttle, walk forward, cost twin."""
+    from tradingagent.timescale import throttle
+
+    clean = synthetic_ohlcv(1400, seed=11)
+    dirty = poison_frame(clean, cut=900, seed=4)
+    cfg = WalkForwardConfig(train_bars=400, test_bars=150, n_candidates=6, top_k=2,
+                            seed=0, verbose=False)
+    kw = dict(weight_transform=lambda w: throttle(w, 5), gross_twin=True)
+    a = walk_forward(clean, ExecutionConfig(initial_capital=100.0), cfg, **kw)
+    b = walk_forward(dirty, ExecutionConfig(initial_capital=100.0), cfg, **kw)
+
+    cut_ts = clean.index[900]
+    early = a.folds[a.folds["test_end"] < cut_ts]
+    assert len(early) >= 2, "test needs at least two folds before the cut"
+    for col in ("start_equity", "end_equity", "return"):
+        np.testing.assert_array_equal(
+            early[col].to_numpy(), b.folds.loc[early.index, col].to_numpy()
+        )
+    # the frictionless twin is a real second account, so it must be causal too
+    early_end = early["test_end"].max()
+    ga = a.meta["gross_equity"].loc[:early_end]
+    gb = b.meta["gross_equity"].loc[:early_end]
+    pd.testing.assert_series_equal(ga, gb, rtol=0, atol=0)
+
+
+def test_the_gross_twin_trades_the_same_decisions_as_the_net_run():
+    """If the twin re-selected on frictionless training windows it would be a
+    different experiment, and the gap between the curves would no longer be
+    'what costs took' - it would be that plus a different strategy."""
+    data = synthetic_ohlcv(1400, seed=12)
+    cfg = WalkForwardConfig(train_bars=400, test_bars=150, n_candidates=6, top_k=2,
+                            seed=0, verbose=False)
+    res = walk_forward(data, ExecutionConfig(initial_capital=100.0), cfg, gross_twin=True)
+    gross = res.meta["gross_equity"]
+    assert gross is not None and len(gross) == len(res.equity)
+    pd.testing.assert_index_equal(gross.index, res.equity.index)
+    # costs can only subtract, so the frictionless account never ends behind
+    assert gross.iloc[-1] >= res.equity.iloc[-1]
+
+
+# --------------------------------------------------------------------------- #
 # a control: the test itself must be capable of failing
 # --------------------------------------------------------------------------- #
 def test_the_audit_catches_a_deliberately_leaky_indicator(clean, dirty):

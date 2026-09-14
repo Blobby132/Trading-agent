@@ -327,7 +327,17 @@ class WalkForwardResult:
             costs=self.meta.get("costs", pd.DataFrame(index=self.equity.index)),
             exec_config=self.exec_config,
             risk_config=self.risk_config,
-            meta={"bust": bool(self.equity.iloc[-1] <= self.exec_config.ruin_equity)},
+            # A search runs with record_trades=False because building a row per
+            # fill dominates the runtime, but the engine still counts fills and
+            # notional. Carrying those counters forward is what keeps trade
+            # counts and turnover reportable out of a walk-forward - without
+            # them a cost-vs-frequency comparison has no denominator.
+            meta={
+                "bust": bool(self.equity.iloc[-1] <= self.exec_config.ruin_equity),
+                "n_trades": int(self.meta.get("n_trades", 0)),
+                "traded_notional": float(self.meta.get("traded_notional", 0.0)),
+                "kill_switch_events": int(self.meta.get("kill_switch_events", 0)),
+            },
         )
         return summarize(result, benchmark=benchmark)
 
@@ -341,6 +351,8 @@ def walk_forward(
     holdout: Optional["Holdout"] = None,
     ledger: Optional["ResearchLedger"] = None,
     label: str = "walk_forward",
+    weight_transform: Optional[Callable] = None,
+    gross_twin: bool = False,
 ) -> WalkForwardResult:
     """Fit, step forward, trade, repeat - and report only the traded part.
 
@@ -348,6 +360,18 @@ def walk_forward(
     rather than quietly optimising over data that is supposed to be unseen.
     Pass ``ledger`` to record the run, including how many candidates were
     evaluated, so repeated searching stays visible.
+
+    Pass ``weight_transform`` to post-process every candidate's sized weight
+    before it is scored or traded - this is how a trading-frequency throttle is
+    applied to a whole sweep cell without adding an axis to the search space.
+    It must be causal; :func:`tradingagent.timescale.throttle` is.
+
+    Pass ``gross_twin=True`` to trade each test window a second time with costs
+    switched off, chaining its own capital. The selection, the weights and the
+    windows are identical by construction, so the difference between the two
+    curves is exactly what fees, slippage and financing took - which is the only
+    honest way to say whether a faster configuration earned its turnover. The
+    gross curve lands in ``meta["gross_equity"]``.
 
     ``data`` is either one OHLCV frame or a dict of them (a portfolio sharing
     one account, which must already be index-aligned - see
@@ -369,6 +393,8 @@ def walk_forward(
     # each value still only depends on bars at or before its own timestamp, so
     # slicing it per fold is safe and saves recomputing the panel every fold
     cached = [sized_weight_for(data, p, base_exec) for p in candidates]
+    if weight_transform is not None:
+        cached = [(weight_transform(w), ec, rc) for w, ec, rc in cached]
 
     equity_pieces: List[pd.Series] = []
     weight_pieces: List[pd.Series | pd.DataFrame] = []
@@ -378,6 +404,24 @@ def walk_forward(
     chosen_per_fold: List[List[Dict]] = []
 
     capital = float(base_exec.initial_capital)
+    # The gross twin runs the same decisions through a frictionless account.
+    # Every cost channel has to be zeroed, not just fees: a leveraged book pays
+    # financing whether or not it trades, and leaving that in would understate
+    # the cost of holding while overstating the cost of turnover.
+    free_exec = replace(
+        base_exec,
+        costs=replace(
+            base_exec.cost_model(),
+            fee_bps=0.0, half_spread_bps=0.0, slippage_bps=0.0,
+            impact_bps_at_full=0.0, borrow_rate=0.0, short_rate=0.0,
+            name="frictionless",
+        ),
+    )
+    gross_pieces: List[pd.Series] = []
+    gross_capital = float(base_exec.initial_capital)
+    traded_notional = 0.0
+    n_trades = 0
+    kill_switch_events = 0
     start = 0
     fold_id = 0
     evaluations = 0
@@ -418,6 +462,14 @@ def walk_forward(
         last_exec, last_risk = ec, rc
 
         res = run_window(data, blended, test, ec, rc, capital)
+        if gross_twin:
+            gec = replace(free_exec, min_trade_frac=ec.min_trade_frac, max_leverage=ec.max_leverage)
+            gres = run_window(data, blended, test, gec, rc, gross_capital)
+            gross_pieces.append(gres.equity)
+            gross_capital = max(float(gres.equity.iloc[-1]), 0.0)
+        n_trades += int(res.meta.get("n_trades", 0))
+        traded_notional += float(res.meta.get("traded_notional", 0.0))
+        kill_switch_events += int(res.meta.get("kill_switch_events", 0))
         equity_pieces.append(res.equity)
         weight_pieces.append(blended.iloc[test])
         cost_pieces.append(res.costs)
@@ -482,6 +534,14 @@ def walk_forward(
             "trades": pd.concat(trade_pieces) if trade_pieces else pd.DataFrame(),
             "costs": pd.concat(cost_pieces) if cost_pieces else pd.DataFrame(index=equity.index),
             "n_candidates": len(candidates),
+            "n_trades": n_trades,
+            "traded_notional": traded_notional,
+            "kill_switch_events": kill_switch_events,
+            "gross_equity": (
+                pd.concat(gross_pieces)[lambda e: ~e.index.duplicated(keep="last")].sort_index()
+                if gross_pieces
+                else None
+            ),
         },
     )
     if ledger is not None:

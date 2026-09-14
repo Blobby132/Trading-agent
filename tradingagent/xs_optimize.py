@@ -164,11 +164,18 @@ def walk_forward_xs(
     holdout: Optional["Holdout"] = None,
     ledger: Optional["ResearchLedger"] = None,
     label: str = "walk_forward_xs",
+    gross_twin: bool = False,
 ) -> XSWalkForwardResult:
     """Fit, select, trade, step forward - and report only the traded windows.
 
     Pass ``holdout`` to make the reserved era unreachable, and ``ledger`` to
     record the search so repeated experimentation stays auditable.
+
+    Pass ``gross_twin=True`` to trade every test window a second time with
+    costs switched off and its own capital chain. Same selections, same
+    weights, same windows - so the gap between the two curves is exactly the
+    bill for turnover, which is the only way to tell whether rebalancing more
+    often earned its keep. The curve lands in ``meta["gross_equity"]``.
     """
     base_exec = base_exec or ExecutionConfig(periods_per_year=252.0)
     wf = wf or XSWalkForwardConfig()
@@ -206,6 +213,19 @@ def walk_forward_xs(
     chosen_per_fold: List[List[Dict]] = []
 
     capital = float(base_exec.initial_capital)
+    # every cost channel zeroed, not just fees: a book pays financing for being
+    # held, and leaving that in would flatter the slow configurations
+    free_exec = replace(
+        base_exec,
+        costs=replace(
+            base_exec.cost_model(),
+            fee_bps=0.0, half_spread_bps=0.0, slippage_bps=0.0,
+            impact_bps_at_full=0.0, borrow_rate=0.0, short_rate=0.0,
+            name="frictionless",
+        ),
+    )
+    gross_pieces: List[pd.Series] = []
+    gross_capital = float(base_exec.initial_capital)
     start = 0
     fold_id = 0
     evaluations = 0
@@ -262,6 +282,14 @@ def walk_forward_xs(
         blended = sum(t[2] for t in top) / len(top)
         exec_cfg = replace(base_exec, max_leverage=max(base_exec.max_leverage, 1.0))
         res = _run(frames, blended, test, exec_cfg, risk, capital)
+        if gross_twin:
+            gres = _run(
+                frames, blended, test,
+                replace(free_exec, max_leverage=exec_cfg.max_leverage),
+                risk, gross_capital, record=False,
+            )
+            gross_pieces.append(gres.equity)
+            gross_capital = max(float(gres.equity.iloc[-1]), 0.0)
 
         equity_pieces.append(res.equity)
         # the realised book, not the requested one: the engine caps gross
@@ -340,7 +368,11 @@ def walk_forward_xs(
         costs=pd.concat(cost_pieces) if cost_pieces else pd.DataFrame(index=equity.index),
         n_evaluations=evaluations,
         meta={"n_candidates": len(candidates), "features": feature_names,
-              "symbols": panel.symbols},
+              "symbols": panel.symbols,
+              "gross_equity": (
+                  pd.concat(gross_pieces)[lambda e: ~e.index.duplicated(keep="last")].sort_index()
+                  if gross_pieces else None
+              )},
     )
     if ledger is not None:
         ledger.record(
