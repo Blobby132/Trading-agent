@@ -279,6 +279,24 @@ asset class, and close to nothing since. If you fund this, fund it as a leverage
 drawdown-controlled bet on crypto trends resuming — not as a machine that turns $100 into $1,000 on
 a schedule.
 
+### Would finer candles or faster trading get there sooner?
+
+No. [`docs/INTERVAL_FREQUENCY.md`](docs/INTERVAL_FREQUENCY.md) sweeps candle interval (1d / 6h /
+1h, with 15m bounded and 5m/1m shown to be untestable) against trading frequency, with every
+bar-count lookback rescaled to the same calendar span so the intervals are actually comparable.
+
+The findings, in short:
+
+- **Daily and the best hourly cell tie on median final equity** over four seeds ($1,245 vs
+  $1,216) — but hourly's seed spread is 4.4x against daily's 1.7x, and it keeps 41 cents of each
+  gross dollar where daily keeps 82.
+- **Higher frequency added cost and noise, not return.** Trading 10.4 times a day nets $537 on a
+  gross of $1,627.
+- **Hourly bars do contain more signal** — the best gross curve in the study, median $2,983 — and
+  it costs more than it is worth at 15 bps a side.
+- **Nothing demonstrates an edge.** All 15,808 configurations evaluated deflate to between 0.04
+  and 0.20, where a coin scores 0.50.
+
 ## Part two: the cross-sectional agent (100+ stocks, and a learner)
 
 The single-asset agent above asks *"will BTC go up?"* — a question whose answer is mostly the
@@ -366,9 +384,17 @@ of independent bets, and that is the only lever here with no statistical catch.
 ### Practical constraints at $100
 
 - **Long/short is the version cross-sectional strategies are built for, and a $100 US cash account
-  cannot run it.** Shorting requires margin (Reg T minimum $2,000); more than three day trades in
-  five days triggers the pattern-day-trader rule ($25,000). The long-only path is the one that is
-  actually available, which is why it is the default.
+  cannot run it.** Shorting requires a margin account, and Reg T sets a $2,000 floor a $100 stake
+  cannot meet. The long-only path is the one actually available, which is why it is the default.
+- **The pattern-day-trader rule is not what binds here**, though an earlier version of this file
+  implied it was. PDT (FINRA 4210) applies to *margin* accounts: four or more day trades in five
+  business days imposes a $25,000 minimum. A $100 account is necessarily a **cash** account, which
+  is exempt from PDT and governed by settlement instead — proceeds settle T+1, and repeatedly
+  buying with unsettled funds earns Good Faith Violations. More to the point, on daily bars the
+  decide-at-close/fill-at-next-open model puts the earliest exit at the open two bars later, so
+  every position is held overnight by construction and **a day trade is structurally impossible**
+  at any rebalance cadence this repository can produce. See
+  [`docs/INTERVAL_FREQUENCY.md`](docs/INTERVAL_FREQUENCY.md) §5.
 - **Fractional shares are mandatory.** $100 across twelve names is $8.33 each — not one whole share
   of most large caps.
 - Liquid large caps only: a small-cap spread would eat the account.
