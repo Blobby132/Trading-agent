@@ -186,6 +186,71 @@ rebalances a day the strategy must gross 438% a year before it has earned a cent
 
 ---
 
+## 4. The crypto grid
+
+BTC-USD, Coinbase. One common range for every cell — **2015-07-20 → 2026-09-12** — one seed, and
+the same 64-candidate budget everywhere, so the cells differ by interval and cadence and nothing
+else. The published daily headline ($1,026) came from a 150-candidate, five-seed run and is *not*
+the comparison here; the `1d / every 1` row below is, because it shares this grid's budget, seed
+and trial count.
+
+| interval | rebalance | trades/day (intended → actual) | gross final | **net final** | cost drag | cost as % of gross profit | CAGR | Sharpe | maxDD | DSR (cell) | DSR (sweep) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| **1d** | **every 1** | 1 → 0.29 | $1,452 | **$1,163** | 144% | **11%** | 30.9% | 0.95 | -49% | 0.32 | 0.13 |
+| 1d | every 5 | 0.2 → 0.14 | $782 | $633 | 94% | 14% | 22.4% | 0.76 | -57% | 0.15 | 0.04 |
+| 6h | every 1 | 4 → 0.84 | $1,309 | $886 | 230% | 19% | 27.0% | 0.89 | -48% | 0.26 | 0.10 |
+| 6h | every 2 | 2 → 0.60 | $1,097 | $789 | 191% | 19% | 25.4% | 0.87 | -51% | 0.24 | 0.09 |
+| 6h | every 4 | 1 → 0.42 | $1,259 | $926 | 190% | 16% | 27.6% | 0.95 | -54% | 0.32 | 0.13 |
+| 6h | every 20 | 0.2 → 0.16 | $876 | $723 | 94% | 12% | 24.2% | 0.86 | -53% | 0.23 | 0.08 |
+| 1h | every 1 | 24 → 2.74 | $1,478 | $643 | 414% | 30% | 22.6% | 0.89 | -49% | 0.26 | 0.10 |
+| 1h | every 2 | 12 → 2.33 | $1,814 | $778 | 492% | 29% | 25.2% | 0.94 | -56% | 0.31 | 0.12 |
+| 1h | every 3 | 8 → 1.93 | $2,147 | $970 | 522% | 26% | 28.3% | 1.02 | -50% | 0.40 | 0.18 |
+| 1h | every 6 | 4 → 1.46 | **$2,445** | $1,096 | 658% | 28% | 30.0% | **1.04** | -54% | 0.43 | **0.20** |
+| 1h | every 12 | 2 → 0.99 | $1,620 | $808 | 455% | 30% | 25.8% | 0.95 | -49% | 0.33 | 0.13 |
+| 1h | every 24 | 1 → 0.63 | $1,991 | $1,079 | 529% | 28% | 29.8% | 1.02 | -53% | 0.40 | 0.18 |
+| 1h | every 120 | 0.2 → 0.18 | $902 | $709 | 126% | 16% | 24.0% | 0.88 | -47% | 0.25 | 0.09 |
+
+**Total configurations evaluated across the sweep: 15,808.**
+
+### Reading it
+
+**Daily wins on net.** $1,163 against the best hourly cell's $1,096 and the best 6h cell's $926.
+On the question as posed — faster and/or richer by moving to finer candles — this grid says no.
+
+**But hourly wins on gross, by a lot.** $2,445 against daily's $1,452. There is more extractable
+signal in hourly bars; it costs more than it is worth. Hourly gives up 26–30% of its gross profit
+to the broker and daily gives up 11%. *The finding is not that hourly does not work. It is that
+hourly works and cannot be paid for at 15 bps a side.* That is a statement about a retail taker
+cost structure, not about the market, and it is the one result in this document most likely to
+flip under different assumptions — see §7.
+
+**Read cost drag as a share of gross profit, not of the stake.** The "% of stake" column rises
+as cells get *richer*, because the fee bill scales with equity on a compounding account: 1h/every6
+pays 658% of a $100 stake precisely because it grew to $2,445 gross. Against gross profit the
+ordering is sane and stable, and it is the column to use.
+
+**Every cadence curve peaks in the interior.** Hourly peaks at every-6 bars, 6h peaks at every-4,
+daily peaks at every-1, and the stock agent peaks at every 5–10 days. Both ends are worse
+everywhere, and — decisively — **the slow ends are worse on gross too**: 1d/every5 grosses $782
+against 1d/every1's $1,452; 6h/every20 grosses $876 against 6h/every4's $1,259. That is not cost,
+it is the book going stale between rebalances. Trading less helps only until you trade less often
+than the signal changes.
+
+**The frequency knob barely moved.** Look at intended versus actual. A cell asking for 24 trades
+a day executed 2.74; one asking for 4 executed 1.46. The `min_trade_frac = 0.10` dust filter
+suppresses any rebalance under a tenth of the position, and at fine intervals most bar-to-bar
+weight changes are smaller than that. **This grid therefore does not test 10+ trades a day at
+all** — it tests 0.14 to 2.74. §6 is the arm that does.
+
+**And none of it survives deflation.** Every cell in the table sits between **0.04 and 0.20**
+after correcting for 15,808 configurations. The winner is at 0.13. These are probabilities that
+the true Sharpe exceeds zero; a fair coin scores 0.50. Watch the `every 3` cell across the run:
+it read 0.29 when the sweep had 3,648 trials and 0.18 at 15,808. Nothing about that cell changed —
+the search around it grew, and a bigger search is *supposed* to make everything inside it less
+believable. That is why deflation is computed sweep-wide rather than per cell.
+
+---
+
 ## 5. The cross-sectional stock agent
 
 ### Interval: there is nothing to sweep
