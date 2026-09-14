@@ -487,13 +487,43 @@ That is a fact about a retail taker cost structure, not about the market.
   running experiment, and the whole point of running it forward is that it is the one test nothing
   in this repository can fool.
 
-### The one follow-up worth running
+### The follow-up, run rather than recommended
 
-Hourly's gross edge is real and is being eaten by a 15 bps/side taker assumption. The honest test
-is to re-run the best hourly cells under the **LOW** cost scenario (4 bps/side, already in
-`execution.py`) and see whether the gross edge survives contact with a maker-priced fill. If it
-does, the finding becomes "hourly needs a better cost structure", which is actionable. If it does
-not, hourly is finished as a direction. That is one run, and it is the only cell in this space
-where the answer is not already known.
+Hourly's gross edge is real and is eaten by a 15 bps/side taker assumption — a fact about a cost
+structure, not about the market, which makes it testable. Both contenders were re-run under LOW
+(4 bps/side, a maker-priced fill) and HIGH (35 bps + square-root impact), two seeds each.
+
+| cost scenario | cell | median net | seed range | median gross | **share of gross kept** | Sharpe |
+|---|---|---|---|---|---|---|
+| **LOW** (4 bps) | 1d / every 1 | $1,550 | $1,182 – $1,918 | $1,674 | **93%** | 1.00 |
+| **LOW** (4 bps) | 1h / every 6 | **$2,230** | **$1,021 – $3,438** | $3,245 | 68% | 1.14 |
+| **BASE** (15 bps) | 1d / every 1 | $1,245 (4 seeds) | $938 – $1,564 | $1,521 | 82% | 0.94 |
+| **BASE** (15 bps) | 1h / every 6 | $1,216 (4 seeds) | $497 – $2,199 | $2,983 | 41% | 1.06 |
+| **HIGH** (35 bps + impact) | 1d / every 1 | $1,146 | $970 – $1,321 | $1,754 | **65%** | 0.92 |
+| **HIGH** (35 bps + impact) | 1h / every 6 | **$352** | **$347 – $356** | $1,676 | **21%** | 0.66 |
+
+This did not go the way the hypothesis expected, and the asymmetry in the seed ranges is the
+finding:
+
+**Hourly's downside is robust. Its upside is not.** Under HIGH costs both seeds land at $347 and
+$356 — a 2.5% spread. That collapse is not seed luck; the seeds agree completely. Under LOW costs
+the same cell returns $1,021 and $3,438 — a 3.4× spread, and the lower of the two is *below*
+daily's worst LOW-cost seed. So "hourly wins with a maker-priced fill" rests entirely on one draw,
+while "hourly is destroyed by adverse costs" reproduces exactly.
+
+For a $100 account that asymmetry is disqualifying on its own. A strategy whose bad case is
+reliable and whose good case is not is the wrong shape regardless of where the median sits.
+
+**And daily degrades gracefully where hourly does not.** Across the full LOW→HIGH range daily
+keeps 93% → 65% of its gross profit; hourly keeps 68% → 21%. Daily's median moves $1,550 → $1,146,
+a 26% decline. Hourly's moves $2,230 → $352, an **84% decline**. Being wrong about costs by one
+scenario step costs daily a quarter of its result and costs hourly five sixths of it.
+
+**What this settles and what it does not.** It settles that hourly is more cost-fragile than
+daily, robustly and by a wide margin — that claim now has both seeds agreeing at the adverse end.
+It does not settle whether hourly is better under genuinely low costs: two seeds disagreeing by
+3.4× is not an answer, and getting one would need the seed count this study spent its budget on
+elsewhere. The follow-up narrowed the question rather than closing it, which is the honest
+description of what one run can do.
 
 ---
