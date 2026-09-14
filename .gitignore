@@ -16,3 +16,8 @@ results/*
 !results/research_ledger.jsonl
 !results/holdout_ledger.json
 .DS_Store
+# Sweep results are the evidence behind docs/INTERVAL_FREQUENCY.md. A report
+# whose numbers cannot be traced back to the run that produced them is just an
+# assertion, so the result files are tracked deliberately.
+!results/sweeps/
+!results/sweeps/**

@@ -1,0 +1,7 @@
+interval,bars_available,calendar_days,train_bars_rescaled,bars_needed_for_1_fold,days_needed_for_1_fold,folds_possible,feasible
+1d,4073,4072,730,922,922,18,yes
+6h,16293,4073,2920,3688,922,18,yes
+1h,97706,4073,17520,22128,922,18,yes
+15m,199815,2082,70080,88512,922,7,yes
+5m,239838,833,210240,265536,922,0,NO
+1m,185584,129,1051200,1327680,922,0,NO
