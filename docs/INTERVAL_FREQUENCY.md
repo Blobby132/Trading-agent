@@ -244,4 +244,33 @@ One number below does need reading carefully: the *fills per day* column counts 
 fills across a 125-name universe**, not round trips. A daily rebalance touching 12 names is 12
 fills and zero day trades.
 
+### Results — 125 US large caps, Nasdaq daily bars, 2016-09 → 2026-09, long only, $100
+
+| rebalance | fills/day | net final | gross final | cost drag | CAGR | Sharpe | maxDD |
+|---|---|---|---|---|---|---|---|
+| every 1 bar | 13.9 | $198 | $291 | 45% of stake | 10.4% | 0.50 | -43% |
+| every 2 bars | 8.9 | $230 | $328 | 45% of stake | 12.9% | 0.57 | -41% |
+| every 3 bars | 6.9 | $236 | $334 | 42% of stake | 13.3% | 0.58 | -41% |
+| every 5 bars | 6.4 | $289 | $391 | 45% of stake | 16.6% | 0.68 | -38% |
+| **every 10 bars** | 4.0 | **$294** | $370 | 37% of stake | 16.9% | 0.67 | -38% |
+| every 21 bars | 2.5 | $188 | $233 | 24% of stake | 9.6% | 0.47 | -43% |
+| every 63 bars | 2.5 | $145 | $172 | 18% of stake | 5.6% | 0.33 | -54% |
+
+**The cadence curve has an interior optimum, around weekly to biweekly.** Both ends are worse,
+and they are worse for opposite reasons — which is the useful part:
+
+* **The fast end is a cost problem.** Daily rebalancing grosses $291 and nets $198. The signal is
+  still there; a third of it goes to the broker.
+* **The slow end is a signal problem.** Quarterly rebalancing grosses **$172** — worse *before
+  any cost is charged* than weekly's $391. Its cost drag is the lowest in the table, 18%, and it
+  still finishes last. That is the book going stale: 12-1 momentum re-ranks faster than once a
+  quarter, so a quarterly book spends most of its life holding last quarter's winners.
+
+"Trade less to save costs" is therefore only good advice until you are trading less often than
+the signal changes. After that you are not saving money, you are discarding information.
+
+None of this moves the daily monthly-rebalanced configuration the paper account is trading onto
+a faster cadence on this evidence alone — see §7 for why a single-seed cadence peak is not
+something to retune a live experiment around.
+
 ---
