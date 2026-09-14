@@ -377,3 +377,123 @@ a faster cadence on this evidence alone — see §7 for why a single-seed cadenc
 something to retune a live experiment around.
 
 ---
+
+## 6. Seed stability — and a correction to §4
+
+§4 concluded, from one seed, that daily won on net: $1,163 against hourly's $1,096. **That
+conclusion was not supported, and I am withdrawing it.** A single seed samples one random subset
+of the search space, and this study had already shown how much that alone moves a number — the
+same 6h cell went from $442 to $886 on candidate budget with the data unchanged.
+
+Both contenders re-run on four seeds (0–3), everything else identical:
+
+| | seeds | median net | min | max | spread | median gross | net ÷ gross | median Sharpe | median maxDD | hit $1,000 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **1d / every 1** | 4 | **$1,245** | $938 | $1,564 | **1.67×** | $1,521 | **0.82** | 0.94 | -48% | **4 / 4** |
+| **1h / every 6** | 4 | **$1,216** | $497 | $2,199 | **4.42×** | $2,983 | **0.41** | 1.06 | -53% | 3 / 4 |
+
+Per seed:
+
+| seed | 1d net | 1h net |
+|---|---|---|
+| 0 | $1,163 | $1,096 |
+| 1 | $1,564 | $1,336 |
+| 2 | $938 | **$497** |
+| 3 | $1,327 | **$2,199** |
+
+### What this actually supports
+
+**The medians are tied.** $1,245 against $1,216 is a 2% gap on four seeds. Nothing in this study
+can distinguish them, and any claim that one interval *beats* the other on return is noise.
+
+**The dispersion is not tied, and that is the real finding.** Hourly's seed spread is 4.42× against
+daily's 1.67×. The identical strategy, on identical data, over identical windows, lands anywhere
+between $497 and $2,199 depending only on which configurations the sampler happened to draw. Daily
+lands between $938 and $1,564. A result that swings 4.4× on the random seed is telling you the
+search is picking up noise, and hourly has far more noise to pick up — 8,760 bars a year against
+365, so vastly more ways for a lucky pattern to appear.
+
+**Hourly runs a much bigger engine to deliver the same net.** It keeps 41 cents of every gross
+dollar; daily keeps 82. Its net is a small difference between two large numbers, which makes it
+far more fragile to any error in the cost model. If the true cost is 20 bps a side rather than 15,
+daily's outcome moves a little and hourly's moves about three times as much. Equal expected
+return, unequal exposure to being wrong about costs, is not a tie.
+
+**Hourly misses the goal more often.** 3 of 4 seeds reach $1,000 against 4 of 4, and it takes a
+deeper drawdown to get there.
+
+So the defensible statement is not "daily wins." It is: **no interval beat daily by a margin this
+study can distinguish from seed noise, and hourly is materially noisier and more cost-fragile for
+the same expected outcome.** When two options have the same median and one has 2.6× the
+dispersion and half the cost cushion, preferring the stable one is not conservatism, it is the
+only reading the evidence supports.
+
+---
+
+## 7. Verdict
+
+**Nothing found here beats the current daily baseline once costs and overfitting risk are
+accounted for.**
+
+Taking the brief's questions in order:
+
+**Can it reach the target meaningfully faster or richer on finer candles?** No. Medians are tied
+between daily and the best hourly cell, and hourly pays for the tie with 2.6× the seed dispersion,
+half the cost cushion, a deeper drawdown and one seed in four that misses the goal entirely.
+
+**Did higher frequency help, or just add cost and noise?** Cost and noise, unambiguously. With the
+dust filter loosened so the fast cells genuinely trade fast, net return is monotone in trade rate
+and points down: 10.44 trades/day → $537, 6.92 → $676, 3.64 → $1,024, 2.43 → $973. The fastest
+cell grosses $1,627 and nets $537.
+
+**Is there anything real in the finer bars at all?** Yes, and this is the one genuinely positive
+finding. Hourly's gross curve is the best in the study — median $2,983 against daily's $1,521.
+There is more extractable signal in hourly bars. It costs more than it is worth at 15 bps a side.
+That is a fact about a retail taker cost structure, not about the market.
+
+### Why this might generalise
+
+* **The cost arithmetic is arithmetic, not a fitted result.** At 1-minute bars 99.8% of bars do
+  not move far enough to pay for a round trip; at hourly the median bar move is already smaller
+  than one. That does not depend on the strategy, the sample, or the seed, and it will hold on any
+  future data with a similar spread.
+* **The interior-optimum shape replicated four times** — crypto daily, crypto 6h, crypto hourly,
+  and the stock cross-section — across two asset classes and two unrelated strategies. Independent
+  replication is the only evidence in this document that was not searched for.
+* **The slow-end decay is visible in gross**, so it is a property of the signal rather than of the
+  fee schedule, and momentum decaying over weeks is exactly what the published literature says.
+
+### Why it might just be curve-fit to this window
+
+* **One symbol, one exchange, one era.** BTC-USD on Coinbase, 2015-2026, containing two enormous
+  bull markets. The daily baseline is already known to fail on every start date after 2020.
+* **15,808 configurations were evaluated.** Every cell deflates to between 0.04 and 0.20 — the
+  probability its true Sharpe exceeds zero, where a coin scores 0.50. **Not one configuration in
+  this study demonstrates an edge.** The winner is at 0.13.
+* **Four seeds is a small sample of a large space**, and hourly's 4.4× spread says four is not
+  enough to pin it down.
+* **The comparison is between two things that are both weak.** Daily being no worse than hourly is
+  not evidence that daily is good.
+
+### What was deliberately not done
+
+* **No 5m or 1m backtest**, at any level of caveat — there is not enough calendar history for one
+  walk-forward fold, and manufacturing a number would have meant shortening the training window or
+  abandoning walk-forward.
+* **No intraday stock backtest** — no multi-year intraday equity data is reachable from here.
+* **`min_trade_frac` was not tuned**, though §4b shows 0.10 is not optimal at 6h. Tuning it would
+  be fitting one more knob to a sample that has already had 15,808 configurations run over it.
+* **No change to the live paper account.** Nothing here is strong enough to justify retuning a
+  running experiment, and the whole point of running it forward is that it is the one test nothing
+  in this repository can fool.
+
+### The one follow-up worth running
+
+Hourly's gross edge is real and is being eaten by a 15 bps/side taker assumption. The honest test
+is to re-run the best hourly cells under the **LOW** cost scenario (4 bps/side, already in
+`execution.py`) and see whether the gross edge survives contact with a maker-priced fill. If it
+does, the finding becomes "hourly needs a better cost structure", which is actionable. If it does
+not, hourly is finished as a direction. That is one run, and it is the only cell in this space
+where the answer is not already known.
+
+---
