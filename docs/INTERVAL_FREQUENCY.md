@@ -251,6 +251,44 @@ believable. That is why deflation is computed sweep-wide rather than per cell.
 
 ---
 
+## 4b. The high-frequency arm — actually trading 10+ times a day
+
+The grid above never tested high frequency. `min_trade_frac = 0.10` ignores any rebalance smaller
+than a tenth of the position, and at hourly bars most bar-to-bar weight changes are smaller than
+that, so cells asking for 24 trades a day executed 2.74. Concluding "high frequency does not help"
+from that would be reporting on an experiment that did not run.
+
+So the fast cells were re-run with the filter at **0.01**, which lets the intended rate happen and
+pays for it. Same data, same windows, same everything else.
+
+| cell | filter 0.10 (grid) | | filter 0.01 (fast arm) | | |
+|---|---|---|---|---|---|
+| | net | trades/day | **net** | **trades/day** | gross |
+| 1h / every 1 | $643 | 2.74 | **$537** | **10.44** | $1,627 |
+| 1h / every 2 | $778 | 2.33 | **$676** | **6.92** | $1,901 |
+| 1h / every 6 | $1,096 | 1.46 | **$1,024** | **3.64** | $2,567 |
+| 1h / every 24 | $1,079 | 0.63 | **$973** | **2.43** | $1,878 |
+| 6h / every 1 | $886 | 0.84 | **$1,040** | **2.15** | $1,582 |
+| 6h / every 4 | $926 | 0.42 | **$930** | **1.09** | $1,323 |
+
+**At 10.44 trades a day the hourly agent nets $537** — the worst crypto result in this study bar
+one — on a gross of $1,627. It is earning; it pays 551% of the stake in fees to do it. Across the
+hourly rows the net return is monotone in trade rate and points the wrong way: 10.44/day → $537,
+6.92 → $676, 3.64 → $1,024, 2.43 → $973. Nothing at any speed reaches daily's $1,163.
+
+So the answer to *"does trading 1 to 10+ times a day help?"* is **no**, and it is now an answer to
+the question as asked rather than one the dust filter declined to run.
+
+### The result that cuts the other way
+
+At 6h, **loosening the filter helped**: $886 → $1,040 at 2.15 trades a day, the best 6h cell in
+the study. `min_trade_frac = 0.10` is not a free win. At hourly it shields the account from noise
+trading; at 6h it was suppressing trades worth making. That is a finding about the dust filter,
+not about frequency, and it would not have surfaced without this arm. It is also a loose thread:
+nothing in this study establishes what the right filter is, only that 0.10 is not obviously it.
+
+---
+
 ## 5. The cross-sectional stock agent
 
 ### Interval: there is nothing to sweep
