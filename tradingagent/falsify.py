@@ -271,6 +271,49 @@ def null_suite(
     return pd.DataFrame([r.row() for r in rows])
 
 
+def drift_controlled_comparison(
+    strategy_sharpes: Sequence[float],
+    path_baseline_sharpes: Sequence[float],
+    observed_edge: float,
+) -> Dict[str, float]:
+    """Compare the strategy to a baseline measured on the **same** synthetic path.
+
+    The raw ``bootstrapped_prices`` null is confounded, and badly. A circular
+    block bootstrap preserves the series' unconditional drift while scattering
+    its sustained bear markets into isolated bad weeks, so the synthetic paths
+    are smoother than reality and *everything* scores better on them - on BTC,
+    buy-and-hold's Sharpe rises from 0.89 on the real path to a median of about
+    1.5 on the bootstrapped ones. Comparing the strategy's absolute Sharpe
+    across that gap measures how much easier the synthetic world is, not whether
+    the strategy has an edge.
+
+    The fix is to difference within each path: on every replication, take the
+    strategy's Sharpe minus a passive baseline's Sharpe **on that same path**.
+    Path difficulty cancels, and what is left is the strategy's contribution
+    over passive exposure. Compare the real path's version of that difference to
+    the null distribution of it.
+
+    This is the comparison worth quoting, and it is the one that answers the
+    question the raw null appears to answer but does not.
+    """
+    edges = np.asarray(strategy_sharpes, dtype=float) - np.asarray(
+        path_baseline_sharpes, dtype=float
+    )
+    edges = edges[np.isfinite(edges)]
+    if not len(edges):
+        return {}
+    n_ge = int((edges >= observed_edge).sum())
+    return {
+        "replications": int(len(edges)),
+        "observed_edge": float(observed_edge),
+        "null_median_edge": float(np.median(edges)),
+        "null_p90_edge": float(np.percentile(edges, 90)),
+        "null_max_edge": float(edges.max()),
+        "n_null_ge_observed": n_ge,
+        "p_value": (n_ge + 1) / (len(edges) + 1),
+    }
+
+
 def compare_to_null(
     observed: Dict[str, float], nulls: pd.DataFrame, *, metric: str = "sharpe"
 ) -> pd.DataFrame:

@@ -218,3 +218,41 @@ def test_compare_to_null_reports_the_percentile():
     out = compare_to_null({"sharpe": 0.5}, nulls)
     assert out["percentile_of_observed"].iloc[0] == pytest.approx(50.0, abs=2.0)
     assert out["null_median"].iloc[0] == pytest.approx(0.5, abs=0.02)
+
+
+# --------------------------------------------------------------------------- #
+# the drift-controlled comparison
+# --------------------------------------------------------------------------- #
+def test_drift_controlled_comparison_cancels_path_difficulty():
+    """The raw bootstrap null is confounded: synthetic paths are easier for
+    everything, so absolute Sharpes are not comparable across them.
+
+    Here every synthetic path is uniformly easier - strategy and baseline both
+    score higher - yet the strategy's *contribution over passive* is negative on
+    all of them. A real edge of +0.03 must then come out as unusual, which the
+    raw comparison of absolute Sharpes would have missed entirely.
+    """
+    from tradingagent.falsify import drift_controlled_comparison
+
+    strategy = [1.2, 1.3, 1.1, 1.4, 1.0]
+    baseline = [1.6, 1.8, 1.5, 1.9, 1.4]          # passive does better on every path
+    out = drift_controlled_comparison(strategy, baseline, observed_edge=0.03)
+    assert out["null_median_edge"] < 0
+    assert out["n_null_ge_observed"] == 0
+    assert out["p_value"] == pytest.approx(1 / 6)
+    # and the naive absolute comparison would have said the opposite
+    assert np.median(strategy) > 0.916
+
+
+def test_drift_controlled_comparison_can_reject():
+    from tradingagent.falsify import drift_controlled_comparison
+
+    out = drift_controlled_comparison([1.0] * 10, [0.5] * 10, observed_edge=0.01)
+    assert out["n_null_ge_observed"] == 10
+    assert out["p_value"] == pytest.approx(1.0)
+
+
+def test_drift_controlled_comparison_handles_no_data():
+    from tradingagent.falsify import drift_controlled_comparison
+
+    assert drift_controlled_comparison([], [], 0.0) == {}
