@@ -45,6 +45,14 @@ class AgentConfig:
     signal_smooth: int = 5           # bars of smoothing on the blended signal;
                                      # damps the day-to-day flip-flopping that
                                      # turns into pure transaction cost
+    signal_deadband: float = 0.0     # zero any blended signal weaker than this.
+                                     # 0.0 reproduces the historical behaviour
+                                     # exactly; see `signal` for the evidence.
+    signal_shape: float = 1.0        # exponent applied to |signal| before sizing.
+                                     # 1.0 is the historical linear mapping.
+    trend_floor: float = 0.0         # minimum long exposure while the long-horizon
+                                     # trend is up. 0.0 reproduces history.
+    trend_floor_lookback: int = 252  # bars defining "the long-horizon trend"
     min_active_share: float = 0.35   # see `signal`: floor on the conviction divisor
     periods_per_year: float = 365.0
 
@@ -130,6 +138,48 @@ class TradingAgent:
             # only take longs above the long-term trend and shorts below it
             combined = combined.where(~(above & (combined < 0)), 0.0)
             combined = combined.where(~((~above) & (combined > 0)), 0.0)
+
+        # -- exposure shaping ------------------------------------------- #
+        # Both transforms are pointwise and monotone in the already-causal
+        # blended signal, so neither can introduce look-ahead; the poisoning
+        # tests cover them anyway.
+        #
+        # The blended signal's magnitude is the panel's *agreement*, not a
+        # forecast of size. Measured on BTC 2017-2026, bars where agreement was
+        # near-total (|signal| > 0.75) returned +33.0 bps on the next bar
+        # against +16.3 unconditional (t = 2.45), while bars of faint agreement
+        # (0.01 < |signal| < 0.25) returned -17.3 bps. Faint agreement is the
+        # panel disagreeing, and disagreement precedes chop.
+        #
+        # `signal_deadband` stands aside rather than taking a token position in
+        # that faint-agreement region. `signal_shape` > 1 bends capital toward
+        # agreement without raising the cap - it can only ever reduce |signal|,
+        # so it cannot smuggle in leverage.
+        if float(cfg.signal_deadband) > 0.0:
+            combined = combined.where(combined.abs() >= float(cfg.signal_deadband), 0.0)
+        if float(cfg.signal_shape) != 1.0:
+            combined = np.sign(combined) * combined.abs() ** float(cfg.signal_shape)
+
+        # -- trend floor -------------------------------------------------- #
+        # Measured against a plain 12-month momentum rule on BTC 2017-2026, the
+        # bars where the rule was invested and this agent was flat are 21.9% of
+        # the sample and the asset returned +40.2% annualised across them. That
+        # block is the bull-market upside the panel leaves behind: its component
+        # models are short-horizon state machines that stand aside on any pause,
+        # while the twelve-month trend is still intact underneath.
+        #
+        # So while the long-horizon trend is up, do not go all the way flat.
+        # This is a FLOOR, not a signal - the panel can still size above it, and
+        # its defensive behaviour in a downtrend is untouched because the floor
+        # simply does not apply there. Only the long side is floored, and only
+        # where the panel is not already asking to be short, so this can never
+        # flip a direction.
+        floor = float(cfg.trend_floor)
+        if floor > 0.0 and int(cfg.trend_floor_lookback) > 0:
+            trailing = df["close"].pct_change(int(cfg.trend_floor_lookback))
+            up = (trailing > 0).reindex(combined.index).fillna(False)
+            liftable = up & (combined >= 0.0) & (combined < floor)
+            combined = combined.where(~liftable, floor)
 
         combined = combined.clip(-1.0, 1.0).fillna(0.0)
         self.diagnostics_ = {

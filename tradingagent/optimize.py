@@ -144,6 +144,10 @@ def params_to_configs(
         regime_trend=int(params["regime_trend"]),
         allow_short=bool(int(params["allow_short"])),
         signal_smooth=int(params["signal_smooth"]),
+        signal_deadband=float(params.get("signal_deadband", 0.0)),
+        signal_shape=float(params.get("signal_shape", 1.0)),
+        trend_floor=float(params.get("trend_floor", 0.0)),
+        trend_floor_lookback=int(params.get("trend_floor_lookback", 252)),
         periods_per_year=base_exec.periods_per_year,
     )
     risk_cfg = RiskConfig(
