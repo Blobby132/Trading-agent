@@ -51,6 +51,30 @@ def buy_and_hold(df: pd.DataFrame) -> pd.Series:
     return pd.Series(1.0, index=df.index)
 
 
+def constant_exposure(df: pd.DataFrame, weight: float = 0.5) -> pd.Series:
+    """Hold a fixed fraction of the account invested, forever.
+
+    The control for any strategy whose claim is downside protection. A trend
+    follower that sits out half the time will naturally show a shallower
+    drawdown than buy-and-hold - so will a constant half-sized position, with no
+    signal, no search and one trade. If the strategy cannot beat this at matched
+    average exposure, its drawdown advantage is coming from holding less, not
+    from knowing when to hold less, and the whole apparatus is an expensive way
+    to own a smaller position.
+    """
+    return pd.Series(float(weight), index=df.index)
+
+
+def half_invested(df: pd.DataFrame) -> pd.Series:
+    """50% invested, always."""
+    return constant_exposure(df, 0.5)
+
+
+def forty_percent_invested(df: pd.DataFrame) -> pd.Series:
+    """40% invested, always - the agent's own average exposure on BTC."""
+    return constant_exposure(df, 0.4)
+
+
 def sma_crossover(df: pd.DataFrame, fast: int = 50, slow: int = 200) -> pd.Series:
     """Long while the fast average is above the slow one, flat otherwise.
 
@@ -84,6 +108,8 @@ def simple_momentum(df: pd.DataFrame, lookback: int = 252) -> pd.Series:
 BASELINES: Dict[str, Callable[[pd.DataFrame], pd.Series]] = {
     "cash": cash,
     "buy_and_hold": buy_and_hold,
+    "half_invested": half_invested,
+    "forty_pct_invested": forty_percent_invested,
     "sma_50_200": sma_crossover,
     "price_above_sma_200": price_above_sma,
     "momentum_12m": simple_momentum,

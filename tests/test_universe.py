@@ -180,3 +180,73 @@ def test_static_membership_leaves_everything_tradeable():
     panel = Panel.from_frames({s: synthetic_ohlcv(200, seed=i) for i, s in enumerate(["A", "B"])})
     same = apply_membership(panel, StaticMembership(["A", "B"]))
     pd.testing.assert_frame_equal(same.close, panel.close)
+
+
+# --------------------------------------------------------------------------- #
+# survivorship: the leakage a static universe hides
+# --------------------------------------------------------------------------- #
+def test_point_in_time_membership_blocks_future_constituents(tmp_path):
+    """A name that joins the index in 2020 must not be tradeable in 2018.
+
+    This is the failure that survivorship bias actually is: a backtest that
+    holds a company before it was large enough to be in the universe is not
+    trading a rule, it is reading a list written later. Nothing about the output
+    looks wrong when it happens, so it needs a test rather than a reviewer.
+    """
+    import pandas as pd
+    from tradingagent.universe import Panel, PointInTimeMembership, apply_membership
+
+    idx = pd.date_range("2018-01-01", periods=1200, freq="D", tz="UTC")
+    frames = {
+        sym: pd.DataFrame(
+            {"open": 10.0, "high": 11.0, "low": 9.0, "close": 10.0, "volume": 1e6}, index=idx
+        )
+        for sym in ("OLD", "LATE")
+    }
+    panel = Panel.from_frames(frames)
+
+    path = tmp_path / "members.csv"
+    path.write_text("symbol,entered,exited\nOLD,2015-01-01,\nLATE,2020-01-01,\n")
+    restricted = apply_membership(panel, PointInTimeMembership.from_csv(str(path)))
+
+    before = pd.Timestamp("2019-06-01", tz="UTC")
+    after = pd.Timestamp("2020-06-01", tz="UTC")
+    assert pd.isna(restricted.close.loc[before, "LATE"]), "future constituent leaked into 2019"
+    assert not pd.isna(restricted.close.loc[after, "LATE"]), "member blanked after it joined"
+    assert not pd.isna(restricted.close.loc[before, "OLD"]), "existing member wrongly blanked"
+
+
+def test_point_in_time_membership_drops_a_delisted_name(tmp_path):
+    """And the other half: a name that exits must stop being tradeable."""
+    import pandas as pd
+    from tradingagent.universe import Panel, PointInTimeMembership, apply_membership
+
+    idx = pd.date_range("2018-01-01", periods=1200, freq="D", tz="UTC")
+    frames = {
+        sym: pd.DataFrame(
+            {"open": 10.0, "high": 11.0, "low": 9.0, "close": 10.0, "volume": 1e6}, index=idx
+        )
+        for sym in ("STAYS", "GONE")
+    }
+    panel = Panel.from_frames(frames)
+    path = tmp_path / "m.csv"
+    path.write_text("symbol,entered,exited\nSTAYS,2015-01-01,\nGONE,2015-01-01,2019-01-01\n")
+    restricted = apply_membership(panel, PointInTimeMembership.from_csv(str(path)))
+
+    assert not pd.isna(restricted.close.loc[pd.Timestamp("2018-06-01", tz="UTC"), "GONE"])
+    assert pd.isna(restricted.close.loc[pd.Timestamp("2019-06-01", tz="UTC"), "GONE"])
+
+
+def test_static_membership_declares_itself_biased():
+    """The interface must not let a survivorship-biased universe pass as clean.
+
+    describe() is what a report quotes, so it has to say so in words rather than
+    leaving the caller to remember.
+    """
+    from tradingagent.universe import StaticMembership
+
+    provider = StaticMembership(["A", "B", "C"])
+    text = provider.describe()
+    assert provider.point_in_time is False
+    assert "NOT point-in-time" in text
+    assert "upper bound" in text
