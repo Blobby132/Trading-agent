@@ -270,25 +270,96 @@ def regime_report(
     return pd.DataFrame(rows)
 
 
+def longest_drawdown_bars(equity: pd.Series) -> int:
+    """Longest run of bars spent below a previous peak.
+
+    Depth is only half of what a drawdown costs. A -30% trough recovered in two
+    months and a -30% trough that lasts three years are different experiences,
+    and only one of them gets abandoned before it recovers - which on a $100
+    account is the failure mode that actually ends the experiment.
+    """
+    if equity.empty:
+        return 0
+    underwater = (equity < equity.cummax()).to_numpy()
+    best = run = 0
+    for flag in underwater:
+        run = run + 1 if flag else 0
+        best = max(best, run)
+    return int(best)
+
+
 def era_report(
-    equity: pd.Series, *, freq: str = "YE", periods_per_year: float = 252.0
+    equity: pd.Series,
+    *,
+    freq: str = "YE",
+    periods_per_year: float = 252.0,
+    benchmark: Optional[pd.Series] = None,
+    trades: Optional[pd.DataFrame] = None,
+    costs: Optional[pd.DataFrame] = None,
+    weights: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
-    """Performance by calendar era — the simplest regime split there is."""
-    from .metrics import sharpe
+    """Performance by calendar era, with enough columns to falsify something.
+
+    Return and Sharpe alone cannot answer "does this only work in one regime?".
+    That needs the benchmark over the *same* era - a strategy up 40% in a year
+    the market rose 45% has not found anything - plus drawdown depth and
+    duration, activity, and cost. Everything optional is reported when the
+    caller has it and omitted when it does not, so a bare equity curve still
+    works.
+    """
+    from .metrics import max_drawdown, sharpe, sortino
 
     returns = equity.pct_change().fillna(0.0)
+    bench_returns = (
+        benchmark.reindex(equity.index).pct_change().fillna(0.0)
+        if benchmark is not None else None
+    )
     rows = []
     for period, group in returns.groupby(pd.Grouper(freq=freq)):
         if len(group) < 20:
             continue
         growth = float(np.prod(1.0 + group.to_numpy()))
-        rows.append({
+        window = equity.loc[group.index]
+        row = {
             "era": str(period.date())[:4] if freq.startswith("Y") else str(period.date()),
             "bars": len(group),
             "return": growth - 1.0,
             "sharpe": sharpe(group, periods_per_year),
+            "sortino": sortino(group, periods_per_year),
+            "max_drawdown": max_drawdown(window),
+            "drawdown_bars": longest_drawdown_bars(window),
+            "win_rate_bars": float((group > 0).mean()),
             "worst_bar": float(group.min()),
-        })
+            "best_bar": float(group.max()),
+        }
+        if bench_returns is not None:
+            bench_group = bench_returns.loc[group.index]
+            bench_growth = float(np.prod(1.0 + bench_group.to_numpy())) - 1.0
+            row["benchmark_return"] = bench_growth
+            row["excess_return"] = row["return"] - bench_growth
+            row["beat_benchmark"] = bool(row["return"] > bench_growth)
+        if trades is not None and not trades.empty:
+            in_era = trades.loc[trades.index.isin(group.index)] if trades.index.name else trades
+            try:
+                in_era = trades.loc[group.index[0] : group.index[-1]]
+            except Exception:  # noqa: BLE001 - a non-datetime trade log is not fatal
+                in_era = trades.iloc[0:0]
+            row["n_trades"] = int(len(in_era))
+            if "notional" in in_era.columns and len(window):
+                row["turnover"] = float(in_era["notional"].sum() / max(window.mean(), 1e-9))
+        if costs is not None and not costs.empty:
+            try:
+                era_costs = costs.loc[group.index[0] : group.index[-1]]
+                row["costs_paid"] = float(era_costs.sum().sum())
+            except Exception:  # noqa: BLE001
+                pass
+        if weights is not None and not weights.empty:
+            try:
+                era_w = weights.loc[group.index[0] : group.index[-1]]
+                row["avg_exposure"] = float(era_w.abs().sum(axis=1).mean())
+            except Exception:  # noqa: BLE001
+                pass
+        rows.append(row)
     return pd.DataFrame(rows)
 
 

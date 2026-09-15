@@ -62,6 +62,11 @@ class Experiment:
     cost_scenario: str
     used_for_selection: bool
     stats: Dict[str, float]
+    #: Which universe-membership rule produced the symbol list. A result over a
+    #: static "today's names" list and one over point-in-time membership are not
+    #: comparable, and without this field they are indistinguishable in the
+    #: record - which is how survivorship bias survives an audit.
+    membership: str = "unknown"
     notes: str = ""
 
     def row(self) -> Dict[str, Any]:
@@ -93,6 +98,7 @@ class ResearchLedger:
         objective: Optional[str] = None,
         cost_scenario: str = "base",
         used_for_selection: bool = False,
+        membership: str = "unknown",
         notes: str = "",
     ) -> Experiment:
         """Write one row. Returns the entry, including its generated id."""
@@ -113,6 +119,7 @@ class ResearchLedger:
             objective=objective,
             cost_scenario=cost_scenario,
             used_for_selection=bool(used_for_selection),
+            membership=str(membership),
             stats={
                 k: float(stats[k])
                 for k in TRACKED_STATS

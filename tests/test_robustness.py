@@ -165,7 +165,11 @@ def test_era_report_splits_by_year(regime_prices):
     equity = pd.Series(np.linspace(100, 200, len(regime_prices)), index=regime_prices.index)
     eras = era_report(equity)
     assert len(eras) >= 3
-    assert set(eras.columns) == {"era", "bars", "return", "sharpe", "worst_bar"}
+    # A subset check, not an exact one: era_report gained drawdown depth and
+    # duration, sortino and win rate so that a regime claim can actually be
+    # falsified from it, and pinning the exact column set would make every such
+    # addition a test failure rather than the improvement it is.
+    assert {"era", "bars", "return", "sharpe", "worst_bar"} <= set(eras.columns)
 
 
 # --------------------------------------------------------------------------- #
@@ -230,3 +234,53 @@ def test_as_utc_normalises_naive_dates():
     assert as_utc(None) is None
     assert str(as_utc("2024-01-01").tz) == "UTC"
     assert str(as_utc(pd.Timestamp("2024-01-01", tz="UTC")).tz) == "UTC"
+
+
+# --------------------------------------------------------------------------- #
+# era reporting: enough columns to falsify a regime claim
+# --------------------------------------------------------------------------- #
+def test_longest_drawdown_bars_counts_the_underwater_run():
+    from tradingagent.robustness import longest_drawdown_bars
+
+    idx = pd.date_range("2020-01-01", periods=10, tz="UTC")
+    # peak at bar 2, underwater bars 3-7, recovers at 8
+    eq = pd.Series([100, 105, 110, 90, 85, 88, 95, 99, 111, 112.0], index=idx)
+    assert longest_drawdown_bars(eq) == 5
+    assert longest_drawdown_bars(pd.Series(dtype=float)) == 0
+    rising = pd.Series(np.arange(1.0, 11.0), index=idx)
+    assert longest_drawdown_bars(rising) == 0
+
+
+def test_era_report_reports_the_benchmark_over_the_same_era():
+    """A strategy up 40% while the market rose 45% has not found anything.
+
+    Without a per-era benchmark the report cannot say that, which is why the
+    excess column exists.
+    """
+    from tradingagent.robustness import era_report
+
+    idx = pd.date_range("2019-01-01", periods=800, freq="D", tz="UTC")
+    rng = np.random.default_rng(5)
+    eq = pd.Series(100 * np.exp(np.cumsum(rng.normal(0.0004, 0.01, 800))), index=idx)
+    bench = pd.Series(100 * np.exp(np.cumsum(rng.normal(0.0008, 0.01, 800))), index=idx)
+    table = era_report(eq, benchmark=bench, periods_per_year=365.0)
+    for col in ("benchmark_return", "excess_return", "beat_benchmark",
+                "max_drawdown", "drawdown_bars", "sortino", "win_rate_bars"):
+        assert col in table.columns, col
+    # excess must reconcile with its two inputs
+    np.testing.assert_allclose(
+        table["excess_return"].to_numpy(),
+        (table["return"] - table["benchmark_return"]).to_numpy(),
+    )
+
+
+def test_era_report_works_without_the_optional_inputs():
+    """A bare equity curve must still produce a report - the extras are extras."""
+    from tradingagent.robustness import era_report
+
+    idx = pd.date_range("2020-01-01", periods=500, freq="D", tz="UTC")
+    eq = pd.Series(np.linspace(100, 150, 500), index=idx)
+    table = era_report(eq, periods_per_year=365.0)
+    assert len(table) >= 1
+    assert "benchmark_return" not in table.columns
+    assert "max_drawdown" in table.columns

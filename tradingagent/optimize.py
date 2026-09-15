@@ -353,6 +353,7 @@ def walk_forward(
     label: str = "walk_forward",
     weight_transform: Optional[Callable] = None,
     gross_twin: bool = False,
+    selection: str = "best",
 ) -> WalkForwardResult:
     """Fit, step forward, trade, repeat - and report only the traded part.
 
@@ -365,6 +366,13 @@ def walk_forward(
     before it is scored or traded - this is how a trading-frequency throttle is
     applied to a whole sweep cell without adding an axis to the search space.
     It must be causal; :func:`tradingagent.timescale.throttle` is.
+
+    ``selection`` is normally ``"best"`` - take the top-k by training score.
+    Pass ``"random"`` to pick k candidates at random on every fold instead. That
+    is not a strategy, it is a **null**: it leaves the data and the candidate
+    pool untouched and removes only the optimiser's judgement, so the gap
+    between the two says what the selection step is actually worth. See
+    :mod:`tradingagent.falsify`.
 
     Pass ``gross_twin=True`` to trade each test window a second time with costs
     switched off, chaining its own capital. The selection, the weights and the
@@ -449,7 +457,16 @@ def walk_forward(
             scored.append((score, idx))
             evaluations += 1
         scored.sort(key=lambda t: t[0], reverse=True)
-        top = [idx for _, idx in scored[: max(1, wf.top_k)]]
+        if selection == "random":
+            # Deliberately ignore the ranking. The fold is still scored, so the
+            # candidate pool and the training cost are identical - only the
+            # choice is thrown away.
+            picker = np.random.default_rng(wf.seed * 100003 + fold_id)
+            top = [int(i) for i in picker.choice(len(scored), size=max(1, wf.top_k), replace=False)]
+        elif selection == "best":
+            top = [idx for _, idx in scored[: max(1, wf.top_k)]]
+        else:
+            raise ValueError(f"selection must be 'best' or 'random', got {selection!r}")
         chosen_per_fold.append([candidates[i] for i in top])
 
         # ---- trade: average the top-k weights over the test window ------ #

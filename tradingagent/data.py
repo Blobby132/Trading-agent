@@ -303,8 +303,9 @@ def load_nasdaq(
     timeout: int = 30,
     retries: int = 3,
     backoff: float = 2.0,
+    asset_class: Optional[str] = None,
 ) -> pd.DataFrame:
-    """Daily US equity bars from Nasdaq's public quote API.
+    """Daily US equity and ETF bars from Nasdaq's public quote API.
 
     A fallback for environments where Yahoo is unreachable or rate-limiting.
     Two limitations matter and neither is cosmetic:
@@ -316,6 +317,12 @@ def load_nasdaq(
       noise: it penalises high-yield names (utilities, telecoms, energy) against
       zero-yield growth names by several percent a year, which is large relative
       to the signal a ranking model is trying to find.
+
+    ``asset_class`` is Nasdaq's own taxonomy and it is not optional on their
+    side: a request for SPY as ``stocks`` returns an empty table rather than an
+    error. Left as None the loader tries ``stocks`` then ``etf``, so ETF symbols
+    work without the caller having to know which bucket a ticker sits in - and
+    an empty result stays distinguishable from a genuinely missing symbol.
 
     Prefer :func:`load_yahoo_chart`, whose adjusted closes are total-return,
     whenever it is reachable.
@@ -333,26 +340,34 @@ def load_nasdaq(
         raise ValueError("the Nasdaq endpoint only serves daily bars")
 
     end_ts = pd.Timestamp(end) if end is not None else pd.Timestamp.now(tz="UTC").tz_localize(None)
-    params = {
-        "assetclass": "stocks",
-        "fromdate": pd.Timestamp(start).strftime("%Y-%m-%d"),
-        "todate": end_ts.strftime("%Y-%m-%d"),
-        "limit": 99999,
-    }
     url = f"https://api.nasdaq.com/api/quote/{symbol}/historical"
-    resp = None
-    for attempt in range(max(retries, 1)):
-        resp = sess.get(url, params=params, timeout=timeout)
-        if resp.status_code == 429 or resp.status_code >= 500:
-            time.sleep(backoff * (2**attempt))
-            continue
-        break
-    if resp is None:  # pragma: no cover - defensive
-        raise RuntimeError(f"no response from Nasdaq for {symbol}")
-    resp.raise_for_status()
-    table = (resp.json().get("data") or {}).get("tradesTable")
-    if not table or not table.get("rows"):
-        raise RuntimeError(f"Nasdaq returned no rows for {symbol}")
+    classes = [asset_class] if asset_class else ["stocks", "etf"]
+    table = None
+    for cls in classes:
+        params = {
+            "assetclass": cls,
+            "fromdate": pd.Timestamp(start).strftime("%Y-%m-%d"),
+            "todate": end_ts.strftime("%Y-%m-%d"),
+            "limit": 99999,
+        }
+        resp = None
+        for attempt in range(max(retries, 1)):
+            resp = sess.get(url, params=params, timeout=timeout)
+            if resp.status_code == 429 or resp.status_code >= 500:
+                time.sleep(backoff * (2**attempt))
+                continue
+            break
+        if resp is None:  # pragma: no cover - defensive
+            raise RuntimeError(f"no response from Nasdaq for {symbol}")
+        resp.raise_for_status()
+        candidate = (resp.json().get("data") or {}).get("tradesTable")
+        if candidate and candidate.get("rows"):
+            table = candidate
+            break
+    if not table:
+        raise RuntimeError(
+            f"Nasdaq returned no rows for {symbol} (tried assetclass={classes})"
+        )
 
     frame = pd.DataFrame(table["rows"])
     frame = frame.rename(columns={"date": "timestamp"})

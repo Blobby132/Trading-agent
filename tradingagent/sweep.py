@@ -41,6 +41,7 @@ import pandas as pd
 from .data import load_prices
 from .engine import ExecutionConfig
 from .execution import CostModel
+from .ledger import ResearchLedger
 from .metrics import deflated_sharpe, summarize
 from .optimize import (
     DEFAULT_SEARCH_SPACE,
@@ -215,6 +216,8 @@ def run_cell(
     calendar_days: float = 365.0,
     session_hours: float = 24.0,
     verbose: bool = False,
+    ledger: Optional[ResearchLedger] = None,
+    symbol: str = "unknown",
 ) -> CellResult:
     """Walk-forward one interval/frequency cell, rescaled and cost-audited.
 
@@ -239,7 +242,7 @@ def run_cell(
     t0 = time.time()
     result = walk_forward(
         frame, base, wf, space, weight_transform=transform, gross_twin=True,
-        label=f"sweep:{cell.name}",
+        label=f"sweep:{cell.name}", ledger=ledger,
     )
     seconds = time.time() - t0
 
@@ -279,6 +282,8 @@ def run_sweep(
     space_daily: Optional[Dict[str, Sequence]] = None,
     align: bool = True,
     verbose: bool = True,
+    ledger: Optional[ResearchLedger] = None,
+    symbol: str = "unknown",
 ) -> pd.DataFrame:
     """Run every cell and return one row each, with sweep-wide deflation.
 
@@ -307,6 +312,7 @@ def run_sweep(
         res = run_cell(
             frames[cell.interval], cell, base_exec=base_exec,
             wf_daily=wf_daily, space_daily=space_daily, verbose=False,
+            ledger=ledger, symbol=symbol,
         )
         results.append(res)
         rows.append(res.row())
