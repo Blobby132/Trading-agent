@@ -153,7 +153,56 @@ mitigates the *underperformance* but not the outright money loss on DIA and IWM.
 
 ## 6. E. Null and placebo experiments
 
-*(Filled in below once the suite completes — see §6 results.)*
+Four nulls, 20 replications each, every replication re-running the **whole** pipeline — search,
+fold loop, cost model. 80 full walk-forwards. What comes back is the distribution of this
+machinery's output under each null, which is what the real result has to be compared against.
+
+Observed: Sharpe **0.916**, final **$1,029**.
+
+| null | what it removes | null median Sharpe | null max | observed percentile | p-value | verdict |
+|---|---|---|---|---|---|---|
+| `shuffled_signal` | *when* the positions occur (block-permuted weights, same exposure and turnover) | 0.455 | 0.863 | 100th | **0.048** | ✅ timing is informative |
+| `sign_flipped` | *which way* (block-randomised direction, same magnitude) | −0.223 | 0.604 | 100th | **0.048** | ✅ direction is informative |
+| `random_selection` | the optimiser's judgement (top-k picked at random from the same pool) | 0.775 | 0.904 | 100th | **0.048** | ✅ selection adds something |
+| `bootstrapped_prices` (raw) | long-horizon trend (circular block bootstrap of the price path) | **1.079** | 1.789 | 35th | 0.667 | ❌ — but see below |
+
+0.048 is the floor for 20 replications (`(0+1)/(20+1)`); nothing smaller is reportable and nothing
+smaller is claimed.
+
+### The bootstrap null was confounded, and fixing it reverses the result
+
+Raw, the last row looks damning: the pipeline scores **higher** on trendless synthetic paths than
+on real data. That comparison is invalid, and the reason is visible in the data.
+
+A circular block bootstrap preserves the series' unconditional drift while scattering its sustained
+bear markets into isolated bad weeks. The synthetic paths are therefore *smoother than reality* and
+everything scores better on them — **buy-and-hold's own Sharpe rises from 0.885 on the real path to
+a median of 1.51 on the bootstrapped ones.** Comparing absolute Sharpes across that gap measures
+how much easier the synthetic world is, not whether the strategy has an edge.
+
+Differencing within each path cancels path difficulty:
+
+| | strategy − buy-and-hold Sharpe, same path |
+|---|---|
+| bootstrapped paths (n=20) | median **−0.463**, p90 −0.173, best −0.103 — **negative on all 20** |
+| **real path** | **+0.031** |
+| | **p = 0.048** |
+
+**The strategy adds value over passive exposure only when real trend structure is present, and
+destroys about 0.46 of Sharpe when it is absent.** That is exactly what a working trend follower
+should do, and it is the strongest positive evidence in this document: the mechanism responds to
+something real in the data rather than to noise.
+
+It does not make the magnitude interesting. The real edge is **+0.031 Sharpe** against buy-and-hold
+and **+0.015** against a constant 40% position. Statistically distinguishable from the null;
+economically negligible.
+
+### What `random_selection` actually says
+
+The optimiser beats random selection from its own candidate pool — 0.916 against a median of 0.775.
+But the *best* random draw scored **0.904**, essentially tying the optimiser. So roughly 85% of the
+Sharpe is available from the candidate pool with no selection intelligence at all. The search
+contributes about 0.14 Sharpe; the strategy family contributes the rest.
 
 ---
 
@@ -254,3 +303,94 @@ Backtest ↔ paper parity reconciles exactly under every cost scenario, through 
 **425 tests pass, 2 skipped.** No test was skipped due to an error.
 
 ---
+
+## 12. Phases 4-7: selection hygiene, statistical honesty, and the gate
+
+**Ledger (Phase 4).** The research ledger recorded 1 experiment and 0 used for selection while the
+interval study had evaluated 15,808 configurations. It is now wired into every search path and
+gained a `membership` field. Every claim of the form "corrected for N trials" was previously
+correct only because a human typed N into a report.
+
+**Provenance (Phase 3).** `provenance.py` labels every result IN-SAMPLE / OUT-OF-SAMPLE / HOLDOUT /
+UNSEEN-ASSET / UNSEEN-PERIOD, requires the configuration count rather than defaulting it to 1, and
+**raises** if asked to average across kinds.
+
+**The gate (Phase 7).** Default-deny across ten dimensions; a check that was never run counts as
+failed. Run on the real strategy with the real evidence:
+
+| check | status | detail |
+|---|---|---|
+| oos_performance | ✅ PASS | sharpe 0.92, drawdown −51.3%, 572 trades |
+| **beats_matched_baseline** | ❌ **FAIL** | sharpe 0.916 vs 0.901 (+0.015); **sortino 1.106 vs 1.252** |
+| parameter_stability | ✅ PASS | median stability 0.994 |
+| cost_robustness | ✅ PASS | beats the matched baseline to ~75 bps/side |
+| **regime_robustness** | ❌ **FAIL** | positive excess in **1/3** trend regimes (bear only) |
+| **cross_asset** | ❌ **FAIL** | **0/4** unseen assets beat buy-and-hold |
+| **statistical_evidence** | ❌ **FAIL** | **deflated Sharpe 0.288** (a coin scores 0.50) |
+| capacity | ✅ PASS | max participation 3.1e-05 of daily volume |
+| execution_realism | ✅ PASS | parity tests pass |
+| holdout_discipline | ⚠️ advisory FAIL | the reserved era has been evaluated against |
+
+### **VERDICT: NOT ACCEPTED — 4 blocking checks.**
+
+---
+
+## 13. The honest reading
+
+**Does the strategy still look promising after trying to break it? No — but it is not nothing.**
+
+What genuinely survived:
+
+* It is **not parameter-fragile** (16/17 on a plateau, median stability 0.994).
+* It is **not cost-fragile** at daily frequency (beats its matched baseline to ~75 bps/side).
+* It is **not a capacity fantasy** (largest trade is 3/100,000ths of daily volume).
+* It **beats three of four nulls outright**, and the fourth once the confound is removed. Timing,
+  direction and selection each carry real information, and the drift-controlled test shows the
+  mechanism responds to genuine trend structure.
+* It is **genuinely defensive**: +41.8% excess in bear regimes, −52% of the benchmark's drawdown.
+
+What failed, and why it matters more:
+
+* **A constant 40% position matches it.** Sharpe 0.916 vs 0.901, and the baseline's Sortino is
+  *better*. The entire apparatus buys 1.6% of Sharpe over a number chosen once.
+* **It works in one regime.** Bear markets. In bull markets it captures a third of the move.
+* **It does not transfer.** 0/4 unseen assets beat buy-and-hold; two lost money outright.
+* **Deflated Sharpe 0.288.** After 1,216 configurations, the probability the true Sharpe exceeds
+  zero is below a coin flip.
+* **The edge is 0.031 Sharpe.** Real, measurable, and too small to act on.
+
+The reconciliation: the mechanism is probably real and probably tiny. The nulls say something
+genuine is being detected. The baselines say what is detected is worth about as much as picking a
+position size and going away.
+
+## 14. Biggest remaining source of uncertainty
+
+**One asset, one era, containing two crypto bull markets.** Every positive finding rests on
+BTC-USD 2015-2026. The cross-asset test is the attempt to escape that, and it failed. There is no
+prolonged slow bear market in any dataset reachable from here, and that is the regime a trend
+follower is most likely to fail in.
+
+Second: **survivorship bias in the stock universe is unresolved** and cannot be resolved without
+vendor data.
+
+## 15. What should be tested next
+
+1. **A drift-controlled null on the unseen assets.** The single highest-value experiment. The
+   cross-asset failure and the drift-controlled null point in opposite directions; running the
+   latter on SPY/QQQ/IWM/DIA would say whether the mechanism is genuinely absent there or merely
+   swamped by a strong bull market. One run, and it resolves the central contradiction.
+2. **More seeds on the drift-controlled comparison.** p = 0.048 is the floor at 20 replications;
+   100 would allow p ≈ 0.01 and make the strongest positive finding much harder to dismiss.
+3. **A volatility-scale-free frozen configuration for cross-asset work** — freeze the *signal* and
+   let `target_vol` be set by the asset's own realised volatility. Stated as a hypothesis to test,
+   not an improvement to adopt.
+
+## 16. What changes should be accepted
+
+**None to the strategy.** No parameter was tuned, no configuration was adopted, and the live paper
+account is untouched. Every change in this work was to the *measurement apparatus*: the nulls, the
+baselines, the cross-asset harness, the ledger wiring, the provenance labels, the gate, and the
+tests that keep them honest.
+
+That is the correct outcome. The system can now say "this strategy does not appear to have a
+reliable edge" — and on the evidence collected here, that is what it says.

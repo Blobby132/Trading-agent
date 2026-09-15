@@ -1,0 +1,19 @@
+{
+ "deflated_sharpe": 0.28798761980140086,
+ "accepted": false,
+ "blockers": [
+  "beats_matched_baseline",
+  "regime_robustness",
+  "cross_asset",
+  "statistical_evidence"
+ ],
+ "drift_controlled": {
+  "replications": 20,
+  "observed_edge": 0.031,
+  "null_median_edge": -0.4629442246601006,
+  "null_p90_edge": -0.1732452011171022,
+  "null_max_edge": -0.1034452132176571,
+  "n_null_ge_observed": 0,
+  "p_value": 0.047619047619047616
+ }
+}
