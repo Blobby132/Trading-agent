@@ -168,3 +168,24 @@ def test_trend_floor_introduces_no_lookahead(data):
     a = TradingAgent(cfg).signal(data)
     b = TradingAgent(cfg).signal(dirty)
     pd.testing.assert_series_equal(a.iloc[:cut], b.iloc[:cut], rtol=0, atol=0)
+
+
+def test_the_new_knobs_are_classified_for_rescaling():
+    """trend_floor_lookback is a bar count and must rescale with the interval.
+
+    252 bars is twelve months on daily data and twelve HOURS on hourly data. The
+    guard test in test_timescale.py fails if a knob is left unclassified; this
+    pins the specific answer rather than merely that an answer exists.
+    """
+    from tradingagent.timescale import (
+        BAR_COUNT_PARAMS, CRYPTO_SCALES, SCALE_INVARIANT_PARAMS, rescale_agent_config,
+    )
+
+    assert "trend_floor_lookback" in BAR_COUNT_PARAMS["AgentConfig"]
+    for k in ("trend_floor", "signal_shape", "signal_deadband"):
+        assert k in SCALE_INVARIANT_PARAMS, k
+
+    hourly = rescale_agent_config(AgentConfig(trend_floor=0.5), CRYPTO_SCALES["1h"])
+    assert hourly.trend_floor_lookback == 252 * 24     # still twelve months
+    assert hourly.trend_floor == 0.5                   # a fraction, unscaled
+    assert hourly.signal_shape == 1.0

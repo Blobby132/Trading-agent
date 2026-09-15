@@ -67,7 +67,8 @@ BARS_PER_DAY: Dict[str, float] = {
 #: lives. If you add a bar-count parameter anywhere, add it here too - the test
 #: suite checks that the config dataclasses hold no unclassified integer knob.
 BAR_COUNT_PARAMS: Dict[str, tuple] = {
-    "AgentConfig": ("perf_lookback", "regime_trend", "signal_smooth"),
+    "AgentConfig": ("perf_lookback", "regime_trend", "signal_smooth",
+                    "trend_floor_lookback"),
     "RiskConfig": (
         "vol_lookback",
         "atr_n",
@@ -131,6 +132,9 @@ SCALE_INVARIANT_PARAMS: Dict[str, str] = {
     "max_weight": "fraction of equity",
     "min_names": "a count of symbols, not of bars",
     "min_positions": "a count of symbols, not of bars",
+    "signal_deadband": "a threshold on a [-1,1] signal, dimensionless",
+    "signal_shape": "an exponent, dimensionless",
+    "trend_floor": "a fraction of equity, dimensionless",
     "n_candidates": "a count of configurations, not of bars",
     "top_k": "a count of configurations, not of bars",
     "seed": "an RNG seed",
