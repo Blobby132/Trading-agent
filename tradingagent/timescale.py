@@ -68,7 +68,7 @@ BARS_PER_DAY: Dict[str, float] = {
 #: suite checks that the config dataclasses hold no unclassified integer knob.
 BAR_COUNT_PARAMS: Dict[str, tuple] = {
     "AgentConfig": ("perf_lookback", "regime_trend", "signal_smooth",
-                    "trend_floor_lookback"),
+                    "trend_floor_lookback", "tilt_lookback", "tilt_rank_window"),
     "RiskConfig": (
         "vol_lookback",
         "atr_n",
@@ -135,6 +135,8 @@ SCALE_INVARIANT_PARAMS: Dict[str, str] = {
     "signal_deadband": "a threshold on a [-1,1] signal, dimensionless",
     "signal_shape": "an exponent, dimensionless",
     "trend_floor": "a fraction of equity, dimensionless",
+    "trend_tilt": "a tilt coefficient on a [0,1] rank, dimensionless",
+    "accel_tilt": "a tilt coefficient on a [0,1] rank, dimensionless",
     "n_candidates": "a count of configurations, not of bars",
     "top_k": "a count of configurations, not of bars",
     "seed": "an RNG seed",
