@@ -1,0 +1,36 @@
+{
+ "raw": [
+  {
+   "null": "bootstrapped_prices",
+   "replications": 20,
+   "observed_sharpe": 1.0885230979732319,
+   "null_median": 1.2863763593835245,
+   "null_p90": 1.6797763713286682,
+   "null_max": 1.9466661308500768,
+   "n_null_ge_observed": 15,
+   "p_value": 0.7619047619047619,
+   "percentile_of_observed": 25.0
+  },
+  {
+   "null": "shuffled_signal",
+   "replications": 20,
+   "observed_sharpe": 1.0885230979732319,
+   "null_median": 0.4572009189560548,
+   "null_p90": 0.6574122217300582,
+   "null_max": 0.9246604533247291,
+   "n_null_ge_observed": 0,
+   "p_value": 0.047619047619047616,
+   "percentile_of_observed": 100.0
+  }
+ ],
+ "drift_controlled": {
+  "replications": 20,
+  "observed_edge": 0.20329924345332995,
+  "null_median_edge": -0.3295624544430621,
+  "null_p90_edge": -0.06460834813562374,
+  "null_max_edge": 0.13500316526030187,
+  "n_null_ge_observed": 0,
+  "p_value": 0.047619047619047616
+ },
+ "real_edge": 0.20329924345332995
+}

@@ -1,0 +1,9 @@
+{
+ "accepted": false,
+ "blockers": [
+  "regime_robustness",
+  "cross_asset",
+  "statistical_evidence"
+ ],
+ "deflated_sharpe_phase": 0.22795312500123
+}

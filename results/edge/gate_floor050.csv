@@ -1,0 +1,11 @@
+check,status,required,question,detail
+oos_performance,PASS,True,Does it clear the floors out of sample?,"sharpe 1.09, drawdown -45.9%, 711 trades"
+beats_matched_baseline,PASS,True,Does it beat the simplest alternative at the same risk posture?,sharpe 1.089 vs baseline 0.917 (+0.172); sortino 1.470 vs 1.282
+parameter_stability,PASS,True,Does it survive small parameter moves?,"median stability 0.989, 1 spike(s): ['allow_short']"
+cost_robustness,PASS,True,Does it survive materially worse execution?,beats the matched baseline up to ~100 bps/side
+regime_robustness,FAIL,True,Does it add value in more than one regime?,positive excess in 1/3 trend regimes: ['bear']
+cross_asset,FAIL,True,Do frozen parameters work on assets they never saw?,0/4 unseen assets beat buy-and-hold (0%)
+statistical_evidence,FAIL,True,Is it distinguishable from luck and from noise?,deflated Sharpe 0.228; worst null p-value 0.048
+capacity,PASS,True,Do the returns depend on unrealistic volume?,max participation 3.11e-05 of daily volume
+execution_realism,PASS,True,Does paper trading reproduce the backtest exactly?,backtest/paper parity tests pass
+holdout_discipline,FAIL,False,Has the reserved era been kept reserved?,holdout has been evaluated against

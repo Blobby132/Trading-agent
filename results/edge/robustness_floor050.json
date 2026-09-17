@@ -1,0 +1,38 @@
+{
+ "label": "floor050",
+ "overrides": {
+  "trend_floor": [
+   0.5
+  ]
+ },
+ "stats": {
+  "bars": 3333.0,
+  "initial_equity": 100.0,
+  "final_equity": 2479.3659545574146,
+  "total_return": 23.793659545574148,
+  "cagr": 0.4214821023003519,
+  "ann_vol": 0.3936186942748599,
+  "sharpe": 1.0885230979732319,
+  "sortino": 1.4701687914553043,
+  "max_drawdown": -0.4592739260495914,
+  "calmar": 0.9177139793797943,
+  "ulcer_index": 26.162151440664637,
+  "profit_factor": 1.2157389904115332,
+  "win_rate_bars": 0.44194419441944194,
+  "avg_gross_exposure": 0.5510307637713336,
+  "max_gross_exposure": 1.5849492689346079,
+  "time_in_market": 0.8895889588958896,
+  "turnover_per_year": 8.900841603276852,
+  "cost_drag": 1.9585646591140726,
+  "bust": 0.0,
+  "n_trades": 711.0,
+  "total_costs": 140.59431703042628,
+  "financing_paid": 55.26214888098098,
+  "target_hit": 1.0,
+  "bars_to_target": 1257.0,
+  "years_to_target": 3.4438356164383563
+ },
+ "matched_exposure": 0.5510307637713336,
+ "stability_median": 0.9891445752587191,
+ "n_spikes": 1
+}

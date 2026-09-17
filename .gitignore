@@ -21,3 +21,9 @@ results/*
 # assertion, so the result files are tracked deliberately.
 !results/sweeps/
 !results/sweeps/**
+# Edge-improvement evidence, same principle as results/sweeps: a report whose
+# numbers cannot be traced back to the run that produced them is an assertion.
+!results/edge/
+!results/edge/**
+!results/edge2/
+!results/edge2/**
