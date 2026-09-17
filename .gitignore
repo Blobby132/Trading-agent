@@ -27,3 +27,7 @@ results/*
 !results/edge/**
 !results/edge2/
 !results/edge2/**
+!results/mechanism/
+!results/mechanism/**
+!results/validation/
+!results/validation/**

@@ -1,0 +1,1 @@
+FROZEN CANDIDATE: M1_no_killswitch = control + max_drawdown_stop=0.0 (nothing else)

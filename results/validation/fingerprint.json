@@ -1,0 +1,100 @@
+{
+ "experiment_id": "INDEPENDENT_EDGE_VALIDATION",
+ "commit_sha": "02768f44001eea95b2108c93699531788020ee33",
+ "working_tree_dirty": true,
+ "code_fingerprint_sha256_16": "f7ad0666b59f405a",
+ "code_files_hashed": [
+  "tradingagent/agent.py",
+  "tradingagent/risk.py",
+  "tradingagent/engine.py",
+  "tradingagent/execution.py",
+  "tradingagent/optimize.py",
+  "tradingagent/control.py"
+ ],
+ "control_name": "BTC_FLOOR_050_CONTROL",
+ "control_spec": {
+  "name": "BTC_FLOOR_050_CONTROL",
+  "symbol": "BTC-USD",
+  "interval": "1d",
+  "source": "coinbase",
+  "data_start": "2015-01-01",
+  "traded_start": "2017-07-29",
+  "traded_end": "2026-09-12",
+  "periods_per_year": 365.0,
+  "initial_capital": 100.0,
+  "cost_scenario": "BASE (15 bps per side: 10 fee + 2.5 half-spread + 2.5 slippage)",
+  "execution": "decision at close of bar t, fill at open of bar t+1",
+  "search_space_size": 2304,
+  "candidates_per_fold": 64,
+  "seeds": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5
+  ],
+  "overrides": {
+   "trend_floor": [
+    0.5
+   ]
+  },
+  "safety": "long-only by selection (allow_short=0 in 100% of folds); gross capped by max_leverage; no live trading; paper interlocks untouched"
+ },
+ "control_metrics_as_recorded": {
+  "median_final_equity": 2475.29,
+  "mean_final_equity": 2507.88,
+  "min_final_equity": 1995.21,
+  "max_final_equity": 3141.41,
+  "median_cagr": 0.421,
+  "median_sharpe": 1.088,
+  "median_sortino": 1.443,
+  "median_max_drawdown": -0.47,
+  "median_avg_exposure": 0.545,
+  "seed0_final_equity": 2479.37,
+  "seed0_sharpe": 1.089,
+  "seed0_trades": 711
+ },
+ "frozen_params": {
+  "allocation": "inverse_vol",
+  "allow_short": "0",
+  "atr_stop_mult": "0.0",
+  "donchian_entry": "40",
+  "ema_fast": "20",
+  "ema_slow": "100",
+  "max_drawdown_stop": "0.35",
+  "max_leverage": "2.0",
+  "max_positions": "0",
+  "min_trade_frac": "0.1",
+  "mom_lookback": "60",
+  "perf_lookback": "60",
+  "regime_filter": "0",
+  "regime_trend": "200",
+  "signal_smooth": "1",
+  "softmax_temp": "4.0",
+  "strategies": "2",
+  "target_vol": "0.8",
+  "trail_stop": "1",
+  "trend_floor": "0.5",
+  "weighting": "equal"
+ },
+ "frozen_source": "BTC_FLOOR_050_CONTROL walk-forward, seed 0",
+ "frozen_chosen_in_folds": "7/19",
+ "seed": 0,
+ "btc_regenerated_now": {
+  "final_equity": 2479.3659545574146,
+  "cagr": 0.4214821023003519,
+  "sharpe": 1.0885230979732319,
+  "sortino": 1.4701687914553043,
+  "max_drawdown": -0.4592739260495914,
+  "avg_exposure": 0.5510307637713336,
+  "n_trades": 711,
+  "bars": 3333,
+  "traded_start": "2017-07-29",
+  "traded_end": "2026-09-12"
+ },
+ "execution_timing": "decision at close of bar t, fill at open of bar t+1",
+ "costs_base_bps_per_side": 15.0,
+ "pandas": "3.0.5",
+ "python": "3.11.15"
+}
